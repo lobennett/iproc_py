@@ -1,0 +1,3 @@
+STEP,RUNMODE,partition,time,mem,cpu
+recon_all,run,default,2-0:00,20GB,16
+sesst_prep,run,default,0-0:15,5GB,default
