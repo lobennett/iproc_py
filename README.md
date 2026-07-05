@@ -3,6 +3,14 @@
 Containerized, generalized repackaging of **upstream iProc** — individualized
 (deeply-sampled, single-subject) fMRI preprocessing.
 
+> **Upstream & attribution.** iProc is the work of the Harvard Neuroinformatics
+> Research Group: **[harvard-nrg/iProc](https://github.com/harvard-nrg/iProc)**
+> (`v2.6.0-beta.4`) is the scientific reference and is vendored here verbatim. This
+> repository only *repackages* it — the science is theirs; please cite and defer to
+> the upstream project. Container/Sherlock/BIDS infrastructure is adapted from
+> [lobennett/iProc@container-and-bids-tooling](https://github.com/lobennett/iProc/tree/container-and-bids-tooling).
+> See [`NOTICE.md`](NOTICE.md) and [`docs/fork-audit.md`](docs/fork-audit.md).
+
 Scientific behavior replicates upstream iProc (`v2.6.0-beta.4`). This repo adds an
 Apptainer container (pinned neuroimaging + core-Python deps; see caveat below),
 BIDS-dataset generalization (any fieldmap regime, any #subjects/sessions/scanner),
