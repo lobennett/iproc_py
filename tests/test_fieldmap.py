@@ -35,3 +35,22 @@ def test_plan_fieldmaps_returns_plans():
     plans = plan_fieldmaps(B / "siemens_phasediff" / "sub-01")
     assert plans and plans[0].regime == "phasediff"
     assert plans[0].preptool == "fsl_prepare_fieldmap"
+
+def test_direct_regime():
+    d = detect_regime(_fmap("direct"))
+    assert d.value == "direct"
+    assert d.confidence == "low"
+    assert d.evidence["preptool"] == "direct"
+    assert len(d.warnings) >= 1
+
+def test_phasediff_missing_manufacturer_defaults_siemens():
+    d = detect_regime(_fmap("siemens_no_mfr"))
+    assert d.value == "phasediff"
+    assert d.confidence == "low"
+    assert d.evidence["manufacturer"] == "SIEMENS"
+    assert any("Manufacturer" in w for w in d.warnings)
+
+def test_phasediff_echotime1_echotime2_fallback():
+    d = detect_regime(_fmap("siemens_te12"))
+    assert d.value == "phasediff"
+    assert abs(d.evidence["delta_te_ms"] - 2.46) < 1e-6
