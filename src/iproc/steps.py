@@ -59,10 +59,15 @@ class jobConstructor(object):
             for anat_dir,anat_scan in self.scans.anats():
                 run = anat_scan['BIDS_ID']
                 logger.info(f'processing sub={sub}, ses={ses}, anat={run}')
-                basename = f'ses-{sanitize(ses)}/anat/sub-{sanitize(sub)}_ses-{sanitize(ses)}_run-{run}_T1w.nii.gz'
-                bids_anat_file = os.path.join(self.args.bids, basename)
-                if not os.path.exists(bids_anat_file):
-                    raise IOError(f'{bids_anat_file} does not exist.')
+                # Use glob to find the T1w file regardless of optional BIDS entities (e.g. acq-)
+                anat_glob = os.path.join(
+                    self.args.bids,
+                    f'ses-{sanitize(ses)}/anat/sub-{sanitize(sub)}_ses-{sanitize(ses)}_*_run-{run}_T1w.nii.gz'
+                )
+                anat_matches = glob.glob(anat_glob)
+                if not anat_matches:
+                    raise IOError(f'No T1w file found matching: {anat_glob}')
+                bids_anat_file = anat_matches[0]
                 #scan_no is set automatically by self.scans.anats()
                 run_zpad = f'{int(self.scans.scan_no):03d}'  # note that this is the ScanNumber, not the BIDS run number
                 anat_basename = f'{ses}_mpr{run_zpad}'
@@ -115,10 +120,18 @@ class jobConstructor(object):
 
                 logger.info(f'processing sub={sub}, ses={ses}, task={task_name}, run={run}')
 
+                # Resolve the BIDS func file via glob to handle case differences between
+                # the all-caps scanlist task names (e.g. REST, CUEDTS) and the actual
+                # mixed-case BIDS filenames (e.g. task-rest, task-cuedTS).
+                func_dir = os.path.join(self.args.bids, f'ses-{sanitize(ses)}/func')
+
                 if int(numechos) == 1:
 
-                    basename = f'ses-{sanitize(ses)}/func/sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-{bids_task_name}_run-{run}_bold.nii.gz'
-                    bids_func_file = os.path.join(self.args.bids, basename)
+                    func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_run-{run}_bold.nii.gz')
+                    func_matches = [f for f in glob.glob(func_glob) if f.lower().count(f'task-{bids_task_name.lower()}_') == 1]
+                    if not func_matches:
+                        raise IOError(f'No BOLD file found matching (case-insensitive task={bids_task_name}): {func_glob}')
+                    bids_func_file = func_matches[0]
                     run_zpad = f'{int(bold_scan["BLD"]):03d}'
 
                     task_dirname = os.path.join(self.conf.iproc.NATDIR, ses, f'{task_name}_{run_zpad}')
@@ -157,8 +170,11 @@ class jobConstructor(object):
                 ### ---- MULTI_ECHO!!!!, JS 2025.03.19 ---- ###
                 else:
                     for iEcho in range(1,int(numechos) + 1):
-                        basename = f'ses-{sanitize(ses)}/func/sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-{bids_task_name}_run-{run}_echo-{iEcho}_bold.nii.gz'
-                        bids_func_file = os.path.join(self.args.bids, basename)
+                        func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_run-{run}_echo-{iEcho}_bold.nii.gz')
+                        func_matches = [f for f in glob.glob(func_glob) if f.lower().count(f'task-{bids_task_name.lower()}_') == 1]
+                        if not func_matches:
+                            raise IOError(f'No BOLD file found matching (case-insensitive task={bids_task_name}): {func_glob}')
+                        bids_func_file = func_matches[0]
                         run_zpad = f'{int(bold_scan["BLD"]):03d}'
 
                         task_dirname = os.path.join(self.conf.iproc.NATDIR, ses, f'{task_name}_{run_zpad}')
@@ -260,11 +276,16 @@ class jobConstructor(object):
                     dest_fmapp_nii = os.path.join(fmap_full_dirname, 'pha_img.nii.gz')
                     bids_fmapp_file = fmap_scans['SECOND_BIDS_FNAME']
                     bids_fmapm_files = fmap_scans['FIRST_BIDS_FNAME']
+                    # Ensure these are always lists (single files come back as strings)
+                    if isinstance(bids_fmapm_files, str):
+                        bids_fmapm_files = [bids_fmapm_files]
+                    if isinstance(bids_fmapp_file, str):
+                        bids_fmapp_file = [bids_fmapp_file]
                     cmd = [script]
                     cmd.append('--input-fmapm')
                     cmd.extend(bids_fmapm_files)
                     cmd.append('--input-fmapp')
-                    cmd.append(bids_fmapp_file)
+                    cmd.extend(bids_fmapp_file)
                     cmd.extend([
                         '--output-fmapm', dest_fmapm_nii,
                         '--output-fmapp', dest_fmapp_nii,
@@ -1630,6 +1651,7 @@ class jobConstructor(object):
 
                 else:
                     print('***** MULTI-ECHO steps.calculate_nuisance_params*****')
+                    codedir = os.path.expanduser(self.conf.iproc.CODEDIR)
                     outputdir = os.path.join(self.conf.iproc.NAT_RESAMP_DIR, sessionid, task_dirname)
                     natdir = os.path.join(self.conf.iproc.NATDIR,  sessionid, task_dirname)
                     resid_in = os.path.join(outputdir,f'{sessionid}_bld{bold_no}_reorient_skip_mc_unwarp_anat_e1.nii.gz')
@@ -1666,7 +1688,8 @@ class jobConstructor(object):
                         nuis_out,
                         outputdir,
                         mcout_ts,
-                        nuis_out_nocensor]
+                        nuis_out_nocensor,
+                        codedir]
         
                     logfile_base = self._io_file_fmt(cmd)
                     job_spec_list.append(JobSpec(cmd,logfile_base,outfiles))
