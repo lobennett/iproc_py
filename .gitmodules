@@ -1,0 +1,7 @@
+[submodule "third_party/iProc-upstream"]
+	path = third_party/iProc-upstream
+	url = https://github.com/harvard-nrg/iProc
+[submodule "third_party/iProc-fork"]
+	path = third_party/iProc-fork
+	url = https://github.com/lobennett/iProc
+	branch = container-and-bids-tooling
