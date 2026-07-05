@@ -1,0 +1,6 @@
+__title__ = 'iproc'
+__description__ = 'iProc'
+__url__ = 'https://github.com/harvard-nrg/iproc'
+__version__ = 'v1.1.1'
+__author__ = 'Neuroinformatics Research Group'
+__author_email__ = 'info@neuroinfo.org'

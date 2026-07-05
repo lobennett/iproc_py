@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iproc"
+version = "2.6.0.post0"
+description = "Containerized, generalized repackaging of upstream iProc (individualized fMRI preprocessing)"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "nibabel == 5.3.3", "texttable == 0.8.4", "paramiko == 3.3.1",
+    "numpy == 1.25.2", "scipy == 1.16.3", "matplotlib == 3.10.8",
+    "PyYAML == 5.2", "yaxil == 0.13.1", "configparser == 3.5.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest >= 8.0"]
+docs = ["mkdocs", "mkdocs-material"]
+
+[project.scripts]
+iproc = "iproc.cli.iproc:main"
+"iProc.py" = "iproc.cli.iproc:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iproc"]
+artifacts = [
+    "src/iproc/runscript/**", "src/iproc/configs/**", "src/iproc/wrappers/**",
+    "src/iproc/mni_masks/**", "src/iproc/*.sh", "src/iproc/*.py",
+    "src/iproc/data/**",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
