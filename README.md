@@ -4,9 +4,16 @@ Containerized, generalized repackaging of **upstream iProc** — individualized
 (deeply-sampled, single-subject) fMRI preprocessing.
 
 Scientific behavior replicates upstream iProc (`v2.6.0-beta.4`). This repo adds an
-Apptainer container (exact deps), BIDS-dataset generalization (any fieldmap regime,
-any #subjects/sessions/scanner), an HPC site-profile + wizard launcher, tests, and a
-validation harness. See `docs/`.
+Apptainer container (pinned neuroimaging + core-Python deps; see caveat below),
+BIDS-dataset generalization (any fieldmap regime, any #subjects/sessions/scanner),
+an HPC site-profile + wizard launcher, tests, and a validation harness. See `docs/`.
+
+> **Pinning caveat:** the core iProc Python deps (numpy, scipy, nibabel, PyYAML,
+> etc.) and the neuroimaging toolchain (FSL, FreeSurfer, AFNI, ANTs, dcm2niix) are
+> version-pinned in `container/iproc.def`. The multi-echo **tedana** stack
+> (scikit-learn, nilearn, mapca, bokeh, robustica, seaborn, …) and the base apt
+> packages are **not** fully pinned, so multi-echo/ICA output is not yet
+> byte-reproducible across rebuilds — see `container/README.md`.
 
 > **Validation status:** **Phase A — done.** Replication-by-construction +
 > command-verified vs the upstream-behavior baseline

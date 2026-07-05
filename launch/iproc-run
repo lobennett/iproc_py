@@ -212,11 +212,12 @@ for sub in "${SUBJECTS[@]}"; do
         --cpus-per-task ${IPROC_CPUS} \
         --output=${LOG_DIR}/slurm_${STAGE}_%j.log \
         --error=${LOG_DIR}/slurm_${STAGE}_%j.err \
-        --wrap=\"apptainer exec ${BIND_ARG} ${IPROC_CONTAINER} \
-            bash -c 'set -e && \
+        --wrap=\"apptainer exec --writable-tmpfs ${BIND_ARG} ${IPROC_CONTAINER} \
+            bash -c 'set -eo pipefail && \
+                     source /opt/module_shim.sh && \
                      source /opt/iproc-venv/bin/activate && \
                      cd ${IPROC_CODE_ROOT} && \
-                     pip install -e . 2>&1 | tail -1 && \
+                     pip install -e . && \
                      mkdir -p ${LOG_DIR} && \
                      iproc -c ${CONFIG} -s ${STAGE} ${BIDS_FLAG} --executor local'\""
 

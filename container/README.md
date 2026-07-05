@@ -17,7 +17,8 @@ designed for Stanford Sherlock HPC.
 | ImageMagick | system (apt) | — | QC image generation |
 | Connectome Workbench | 2.1.0 (pinned) | humanconnectome.org/storage/app/media/workbench/ | Surface data tools (not actively used by iProc; included for future use) |
 | MRIcroGL | v1.2.20190902 (pinned) | github.com/rordenlab/MRIcroGL/releases/ | Visualization |
-| Python packages | exact-pinned (numpy 1.25.2, scipy 1.16.3, nibabel 5.3.3, etc.) | PyPI | iProc runtime deps + tedana |
+| Core Python deps | exact-pinned (numpy 1.25.2, scipy 1.16.3, nibabel 5.3.3, PyYAML 5.2, …) | PyPI | iProc runtime |
+| tedana + ICA stack | NOT fully pinned (scikit-learn, nilearn, mapca, bokeh, robustica, seaborn, …) | PyPI | Multi-echo ICA — see reproducibility caveat below |
 
 *AFNI has no dated/versioned Linux binary tarball upstream — see
 "AFNI Version Pin" below for why it intentionally tracks latest-stable and
@@ -40,7 +41,24 @@ All pins are also documented in a comment block at the top of `%post` in
 | ANTs | `2.4.4` | Versioned GitHub release |
 | Connectome Workbench | `2.1.0` | `v1.3.2` (the version iProc historically validated against) is no longer distributed upstream |
 | MRIcroGL | `v1.2.20190902` | Versioned GitHub release tag |
-| Python packages | exact (`==`) pins | See `iproc.def` %post section 10 |
+| Core Python deps | exact (`==`) pins | numpy/scipy/nibabel/PyYAML/… — first `pip install` block, `iproc.def` %post section 10 |
+| tedana + ICA stack | **not** fully pinned | scikit-learn, nilearn, mapca, bokeh, robustica, seaborn, … — second block, section 10 (see caveat below) |
+
+### Reproducibility caveat: tedana / multi-echo stack
+
+Only the core iProc Python deps and the neuroimaging toolchain are exactly
+pinned. The multi-echo **tedana** stack and its transitive deps
+(scikit-learn, nilearn, mapca, bokeh, robustica, seaborn, threadpoolctl,
+joblib, pybtex, tqdm, …) are installed *unpinned* — only `numpy==1.25.2` /
+`scipy==1.16.3` are held fixed while they resolve. Multi-echo/ICA denoising
+output is therefore **not guaranteed byte-reproducible across rebuilds**. If
+you need reproducible multi-echo output, pin this stack yourself in
+`iproc.def` %post section 10 and rebuild.
+
+> **Build note (`PyYAML==5.2`):** this pin installed cleanly locally and
+> matches upstream, but building `PyYAML==5.2` on the Linux container under
+> Python 3.11 is a Phase-B / container-build verification item — confirm the
+> wheel/sdist builds there before relying on the image.
 
 ### AFNI Version Pin
 
@@ -147,7 +165,9 @@ scp iproc.sif ${USER}@login.sherlock.stanford.edu:$SCRATCH/containers/
 
 ### Interactive test
 ```bash
-apptainer shell --bind $SCRATCH:/scratch,$OAK:/oak \
+# --writable-tmpfs gives an ephemeral overlay so `pip install -e .` can write
+# into the otherwise read-only in-image /opt/iproc-venv.
+apptainer shell --writable-tmpfs --bind $SCRATCH:/scratch,$OAK:/oak \
     $SCRATCH/containers/iproc.sif
 ```
 
@@ -155,7 +175,7 @@ Inside the container:
 ```bash
 source /opt/iproc-venv/bin/activate
 cd /path/to/iProc
-pip install -e .      # first time only
+pip install -e .      # first time only (needs --writable-tmpfs, above)
 iproc --help
 ```
 
@@ -173,13 +193,19 @@ IPROC_DIR=$OAK/path/to/iProc
 CONFIG=$OAK/path/to/mri_data/SUB/subject_lists/SUB.cfg
 BIDS=$OAK/path/to/bids/sub-SUB
 
+# --writable-tmpfs: ephemeral overlay so `pip install -e .` can write into the
+# read-only in-image /opt/iproc-venv. set -eo pipefail so a failed install/run
+# fails the job instead of passing silently.
 apptainer exec \
+    --writable-tmpfs \
     --bind $SCRATCH:/scratch,$OAK:/oak \
     $CONTAINER \
     bash -c "
+        set -eo pipefail
+        source /opt/module_shim.sh
         source /opt/iproc-venv/bin/activate
         cd ${IPROC_DIR}
-        pip install -e . 2>/dev/null
+        pip install -e .
         iproc -c ${CONFIG} -s setup --bids ${BIDS} --executor local
     "
 ```
@@ -188,8 +214,10 @@ apptainer exec \
 ```bash
 for stage in setup bet unwarp_motioncorrect_align T1_warp_and_mask \
              combine_and_apply_warp filter_and_project; do
-    apptainer exec --bind $SCRATCH:/scratch,$OAK:/oak \
+    apptainer exec --writable-tmpfs --bind $SCRATCH:/scratch,$OAK:/oak \
         $CONTAINER bash -c "
+            set -eo pipefail
+            source /opt/module_shim.sh
             source /opt/iproc-venv/bin/activate
             cd ${IPROC_DIR}
             iproc -c ${CONFIG} -s ${stage} --bids ${BIDS} --executor local

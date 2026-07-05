@@ -161,11 +161,15 @@ run on a real Siemens gradient-echo phasediff dataset —
 matching upstream) works correctly on real multi-session BIDS data, not
 just the synthetic fixtures used in unit tests. This is the "real second
 regime" check referenced in
-`docs/superpowers/specs/2026-07-04-iproc-python-package-design.md`; GE
-(Logan's own data, a new capability relative to upstream) is the other
-regime already exercised, so MSC is what confirms the *upstream-default*
-path still works end-to-end once wired through this package's
-generalized BIDS layer, not only through hand-built config fixtures.
+`docs/superpowers/specs/2026-07-04-iproc-python-package-design.md`. GE
+(Logan's own data) is a *new* capability relative to upstream — which only
+ever saw Siemens/Varian in practice — and is **itself not yet validated**:
+its own end-to-end check on real data is also pending Phase B, not something
+already exercised. MSC's role is narrower: it confirms the *upstream-default*
+Siemens/phasediff path still works end-to-end once wired through this
+package's generalized BIDS layer, not only through hand-built config
+fixtures. Validating the GE path is a separate Phase-B item (see
+`docs/generalization.md` on GE being flagged new-capability, VERIFY-only).
 
 ## Where results are recorded
 

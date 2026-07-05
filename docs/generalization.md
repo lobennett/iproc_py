@@ -94,9 +94,20 @@ directory and returns a `Decision` (`value`, `confidence`, `rationale`,
 
 ## Orientation
 
-`iproc.orientation.registration_policy(t1_path, config)` governs whether
-the T1→MNI registration step applies `fslswapdim` and how wide FLIRT's
-search range is:
+**Status: advisory only.** `iproc.orientation.registration_policy()` provides
+T1-orientation *detection*, warnings, and an opt-in policy object, but it is
+**not currently wired into** the vendored `compute_T1_MNI_warp.sh`, which
+always runs upstream's own behavior (`fslswapdim` + FLIRT search `(-180,
+180)`). So today the module *describes* what the registration step should do
+and surfaces a warning when a T1 looks already-RAS — it does not yet *change*
+what the step actually runs. Full wiring of `orientation_mode=fork_no_swap`
+into the warp script is a documented follow-up; until then the settings below
+are what the policy *reports*, and the T1→MNI step behaves as upstream
+regardless.
+
+`iproc.orientation.registration_policy(t1_path, config)` reports whether the
+T1→MNI registration step *should* apply `fslswapdim` and how wide FLIRT's
+search range *should* be:
 
 - **Default (`orientation_mode` unset, or anything other than
   `"fork_no_swap"`)**: `swapdim=True`, FLIRT search `(-180, 180)` —

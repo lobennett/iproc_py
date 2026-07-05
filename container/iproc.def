@@ -18,15 +18,20 @@ From: ubuntu:22.04
     Also: FreeSurfer 6.0.0, AFNI 16.3.13, ANTs 2.4.4, Python 3.11 + tedana,
     GNU Parallel, dcm2niix, ImageMagick, Connectome Workbench 1.3.2.
 
-    Usage:
+    Usage (source the module shim + venv inside a bash -c so `module` and the
+    console `iproc` entry point are both defined):
       apptainer exec --bind /path/to/data:/data iproc.sif \
-        iProc.py -c /data/config.cfg -s setup --bids /data/bids/sub-XX
+        bash -c "source /opt/module_shim.sh; \
+                 source /opt/iproc-venv/bin/activate; \
+                 iproc -c /data/config.cfg -s setup --bids /data/bids/sub-XX --executor local"
 
 # ============================================================================
 # FILES — only the module shim and FreeSurfer license need pre-staging
 # ============================================================================
 %files
     module_shim.sh /opt/module_shim.sh
+    flirt_wrapper.sh /opt/flirt_wrapper.sh
+    convert_xfm_wrapper.sh /opt/convert_xfm_wrapper.sh
     downloads/license.txt /opt/freesurfer-6.0.0/license.txt
     # If you have exact FSL versions from Sherlock, uncomment and add:
     # downloads/fsl-4.0.3.tar.gz /tmp/fsl-sherlock-4.0.3.tar.gz
@@ -41,10 +46,19 @@ From: ubuntu:22.04
 
     # ============================================================================
     # PINNED VERSIONS — reproducibility manifest for this container build.
-    # Every tool below is pinned to an explicit version and source URL except
-    # AFNI, which has no dated/versioned Linux binary tarball upstream; see the
-    # "AFNI VERSION PINNING NOTE" in section 6 below for the documented
-    # justification and the build-time provenance capture used instead.
+    # The neuroimaging toolchain and the *core* iProc Python deps below are
+    # pinned to an explicit version and source URL, with two honest caveats:
+    #   - AFNI has no dated/versioned Linux binary tarball upstream; see the
+    #     "AFNI VERSION PINNING NOTE" in section 6 for the justification and
+    #     the build-time provenance capture used instead.
+    #   - The multi-echo tedana stack (scikit-learn, nilearn, mapca, bokeh,
+    #     robustica, seaborn, threadpoolctl, joblib, pybtex, tqdm, …) and the
+    #     base apt packages are NOT fully version-pinned (see section 10:
+    #     tedana + its transitive deps are installed unpinned, only numpy/scipy
+    #     are held to exact versions). Multi-echo/ICA output is therefore not
+    #     guaranteed byte-reproducible across rebuilds — a known reproducibility
+    #     caveat, not an exact pinning. Only numpy/scipy/nibabel/PyYAML and the
+    #     other core deps in the first `pip install` block are exact-pinned.
     #
     #   Tool                        Version          Source
     #   --------------------------  ---------------  ------------------------------------------------------------
@@ -59,7 +73,8 @@ From: ubuntu:22.04
     #   ANTs                        2.4.4            github.com/ANTsX/ANTs/releases/download/v2.4.4/ants-2.4.4-ubuntu-22.04-X64-gcc.zip
     #   Connectome Workbench        2.1.0            humanconnectome.org/storage/app/media/workbench/workbench-linux64-v2.1.0.zip
     #   MRIcroGL                    v1.2.20190902    github.com/rordenlab/MRIcroGL/releases/download/v1.2.20190902/MRIcroGL_linux.zip
-    #   Python packages             exact-pinned     see `pip install` blocks below (numpy==1.25.2, scipy==1.16.3, etc.)
+    #   Core Python deps            exact-pinned     first `pip install` block below (numpy==1.25.2, scipy==1.16.3, nibabel==5.3.3, PyYAML==5.2, etc.)
+    #   tedana + ICA stack          NOT pinned       section 10 second block (scikit-learn, nilearn, mapca, bokeh, robustica, seaborn, …) — reproducibility caveat
     #
     # All URLs above were verified reachable (HTTP 200) as of 2026-07-05.
     # ============================================================================
@@ -238,8 +253,16 @@ FSLEOF
     cd /tmp
     curl -fsSL "https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/fslinstaller.py" \
         -o fslinstaller.py
-    python3 fslinstaller.py -d /opt/fsl-6.0.7 --cuda none 2>&1 || true
+    python3 fslinstaller.py -d /opt/fsl-6.0.7 --cuda none 2>&1
     rm -f fslinstaller.py
+    # Only create the 6.0.1 mapping symlink if the install actually produced a
+    # usable FSL tree — do NOT mask a failed install with `|| true` + an
+    # unconditional symlink (that yields a dangling 6.0.1 -> empty 6.0.7).
+    if [[ ! -x /opt/fsl-6.0.7/bin/flirt ]]; then
+        echo "ERROR: FSL 6.0.7 install failed — /opt/fsl-6.0.7/bin/flirt not found"
+        ls -la /opt/fsl-6.0.7/bin/ 2>/dev/null || true
+        exit 1
+    fi
     ln -sf /opt/fsl-6.0.7 /opt/fsl-6.0.1
     if [[ -d /opt/fsl-6.0.7 ]] && [[ ! -L /opt/fsl-6.0.7 ]]; then
         mkdir -p /opt/fsl-6.0.7/etc/fslconf
@@ -251,6 +274,43 @@ export FSLDIR FSLOUTPUTTYPE
 FSLEOF
         fi
     fi
+
+    # ------------------------------------------------------------------
+    # 4b. Activate the hex-float flirt/convert_xfm wrappers (ALWAYS-ON)
+    # ------------------------------------------------------------------
+    # FSL 5.0.x can emit affine .mat matrices in C99 hex-float notation
+    # (0x1.abcdp+0) that the rest of FSL then parses as 0.0 — producing
+    # all-zero matrices and NEWMAT::SingularException downstream. The wrapper
+    # scripts (container/flirt_wrapper.sh, convert_xfm_wrapper.sh) run the
+    # real binary, then rewrite any -omat output that is *genuinely*
+    # hex-float into decimal. Because they only convert true C99 hex-float
+    # tokens (0x/0X AND a p/P exponent) and leave decimal matrices
+    # byte-for-byte untouched, baking them in is safe even if this FSL build
+    # actually emits decimal — the fix (see hex-float fix #1) becomes an
+    # always-active no-op in that case rather than dead, unwired code.
+    #
+    # We operate on the DEFAULT FSLDIR (/opt/fsl-5.0.10, which symlinks to
+    # /opt/fsl-5.0.8): move the real binary aside to /opt/.fsl_orig/ (where
+    # the wrapper calls it from) and install the wrapper in its place.
+    # Idempotent: the real binary is only moved aside once (guarded on
+    # /opt/.fsl_orig/<tool> not already existing).
+    #
+    # NOTE: whether this FSL build actually emits hex-float .mat files is a
+    # Phase-B verification item (see docs/validation.md); the wrapper is
+    # correct and harmless either way.
+    echo "=== Activating hex-float flirt/convert_xfm wrappers ==="
+    DEFAULT_FSLBIN=/opt/fsl-5.0.10/bin
+    mkdir -p /opt/.fsl_orig
+    for tool in flirt convert_xfm; do
+        if [[ -f "${DEFAULT_FSLBIN}/${tool}" ]] && [[ ! -e "/opt/.fsl_orig/${tool}" ]]; then
+            mv "${DEFAULT_FSLBIN}/${tool}" "/opt/.fsl_orig/${tool}"
+            cp "/opt/${tool}_wrapper.sh" "${DEFAULT_FSLBIN}/${tool}"
+            chmod +x "${DEFAULT_FSLBIN}/${tool}"
+            echo "  wrapped ${tool}: real binary -> /opt/.fsl_orig/${tool}"
+        else
+            echo "  WARNING: could not wrap ${tool} (missing ${DEFAULT_FSLBIN}/${tool} or already wrapped)"
+        fi
+    done
 
     # ------------------------------------------------------------------
     # 5. FreeSurfer 6.0.0

@@ -95,9 +95,14 @@ iproc -c mri_data/s03/subject_lists/s03.cfg -s setup --bids /path/to/bids/sub-s0
 to build `iproc.sif`):
 
 ```bash
-apptainer exec --bind $OAK:/oak,$SCRATCH:/scratch $CONTAINER bash -c "
+# --writable-tmpfs: ephemeral overlay so `pip install -e .` can write into the
+# read-only in-image /opt/iproc-venv. set -eo pipefail surfaces install/run
+# failures instead of masking them.
+apptainer exec --writable-tmpfs --bind $OAK:/oak,$SCRATCH:/scratch $CONTAINER bash -c "
+    set -eo pipefail
+    source /opt/module_shim.sh
     source /opt/iproc-venv/bin/activate
-    cd $IPROC_CODE && pip install -e . 2>/dev/null
+    cd $IPROC_CODE && pip install -e .
     iproc -c \$CONFIG -s setup --bids \$BIDS --executor local
 "
 ```
