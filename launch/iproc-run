@@ -218,7 +218,7 @@ for sub in "${SUBJECTS[@]}"; do
                      cd ${IPROC_CODE_ROOT} && \
                      pip install -e . 2>&1 | tail -1 && \
                      mkdir -p ${LOG_DIR} && \
-                     python iProc.py -c ${CONFIG} -s ${STAGE} ${BIDS_FLAG} --executor local'\""
+                     iproc -c ${CONFIG} -s ${STAGE} ${BIDS_FLAG} --executor local'\""
 
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[DRY RUN] $sub:"

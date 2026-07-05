@@ -9,7 +9,7 @@ name: sherlock
 scheduler: slurm
 container: $SCRATCH/containers/iproc.sif
 binds: ["/oak:/oak", "/scratch:/scratch"]
-storage: { code_root: $SCRATCH/iProc, output_root: $SCRATCH/users/logben/iproc }
+storage: { code_root: $SCRATCH/iProc, output_root: $SCRATCH/iproc_out }
 # "default" and "long" are logical partition names; iproc-run resolves a
 # stage to one of these via resources.<stage>.partition (falls back to
 # "default" when a stage doesn't specify one).

@@ -156,7 +156,7 @@ Inside the container:
 source /opt/iproc-venv/bin/activate
 cd /path/to/iProc
 pip install -e .      # first time only
-iProc.py --help
+iproc --help
 ```
 
 ### SLURM batch job
@@ -180,7 +180,7 @@ apptainer exec \
         source /opt/iproc-venv/bin/activate
         cd ${IPROC_DIR}
         pip install -e . 2>/dev/null
-        python iProc.py -c ${CONFIG} -s setup --bids ${BIDS} --executor local
+        iproc -c ${CONFIG} -s setup --bids ${BIDS} --executor local
     "
 ```
 
@@ -192,7 +192,7 @@ for stage in setup bet unwarp_motioncorrect_align T1_warp_and_mask \
         $CONTAINER bash -c "
             source /opt/iproc-venv/bin/activate
             cd ${IPROC_DIR}
-            python iProc.py -c ${CONFIG} -s ${stage} --bids ${BIDS} --executor local
+            iproc -c ${CONFIG} -s ${stage} --bids ${BIDS} --executor local
         "
 done
 ```

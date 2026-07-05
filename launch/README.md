@@ -17,7 +17,7 @@ launch/iproc-run <profile.yaml> <subjects.txt> <stage> [options]
   lines starting with `#` are ignored.
 - `stage` — an iProc stage (`setup`, `bet`, `unwarp_motioncorrect_align`,
   `T1_warp_and_mask`, `combine_and_apply_warp`, `filter_and_project`, ...).
-  Not validated by the launcher — `iProc.py -s` rejects unknown stages
+  Not validated by the launcher — `iproc -s` rejects unknown stages
   itself, so the launcher never has a stage list to keep in sync.
 
 Options:
@@ -105,7 +105,7 @@ sbatch --job-name=iproc_<stage>_<subject> \
     --wrap="apptainer exec --bind <binds> <container> \
         bash -c 'source /opt/iproc-venv/bin/activate && \
                  cd <code_root> && pip install -e . && \
-                 python iProc.py -c <output_root>/mri_data/<subject>/subject_lists/<subject>.cfg \
+                 iproc -c <output_root>/mri_data/<subject>/subject_lists/<subject>.cfg \
                      -s <stage> [--bids <bids_root>/sub-<subject>] --executor local'"
 ```
 
