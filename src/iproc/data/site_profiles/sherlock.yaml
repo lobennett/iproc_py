@@ -1,0 +1,22 @@
+# Stanford Sherlock site profile.
+#
+# storage.*_root and container use $SCRATCH so the profile stays portable
+# across users; iproc-run leaves these as literal shell syntax and lets the
+# submitting shell (which has $SCRATCH set on Sherlock) expand them at
+# sbatch time. $SCRATCH is fast/purgeable scratch: copy derivatives to Oak
+# once a run has been QC'd.
+name: sherlock
+scheduler: slurm
+container: $SCRATCH/containers/iproc.sif
+binds: ["/oak:/oak", "/scratch:/scratch"]
+storage: { code_root: $SCRATCH/iProc, output_root: $SCRATCH/users/logben/iproc }
+# "default" and "long" are logical partition names; iproc-run resolves a
+# stage to one of these via resources.<stage>.partition (falls back to
+# "default" when a stage doesn't specify one).
+partitions: { default: normal, long: russpold }
+resources:
+  default: { time: "08:00:00", mem: 32G, cpus: 4 }
+  setup:   { time: "24:00:00", mem: 32G, cpus: 16, partition: long }
+  combine_and_apply_warp: { time: "08:00:00", mem: 64G, cpus: 8 }
+fsl: { mode: mapped }
+modules: []

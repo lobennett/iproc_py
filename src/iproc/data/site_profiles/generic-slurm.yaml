@@ -1,0 +1,12 @@
+name: generic-slurm
+scheduler: slurm
+container: ./container/iproc.sif
+binds: []
+storage: { code_root: ., output_root: ./derivatives/iproc }
+partitions: { default: normal }
+resources:
+  default: { time: "08:00:00", mem: 32G, cpus: 4 }
+  setup:   { time: "24:00:00", mem: 32G, cpus: 16 }
+  combine_and_apply_warp: { time: "08:00:00", mem: 64G, cpus: 8 }
+fsl: { mode: mapped }
+modules: []

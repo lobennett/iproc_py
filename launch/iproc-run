@@ -1,0 +1,239 @@
+#!/bin/bash
+# iproc-run — Profile-driven SLURM/apptainer launcher for iProc.
+#
+# Generalizes the fork's bids_setup/run_subjects.sh: instead of hardcoding
+# one site's paths/partitions/resources into the script, everything
+# site-specific lives in a YAML "site profile" (see
+# src/iproc/data/site_profiles/*.yaml and launch/README.md), and this
+# script turns <profile> + <subjects> + <stage> into one `sbatch` submission
+# per subject.
+#
+# Usage:
+#   iproc-run <profile.yaml> <subjects.txt> <stage> [options]
+#
+# Arguments:
+#   profile.yaml   — Site profile (see launch/README.md for the schema).
+#   subjects.txt   — One subject label per line (e.g. s03, s10). Lines
+#                    starting with # are ignored. Blank lines are ignored.
+#   stage          — iProc stage (setup, bet, unwarp_motioncorrect_align,
+#                    T1_warp_and_mask, combine_and_apply_warp,
+#                    filter_and_project, ...). Not validated here — iProc.py
+#                    itself rejects unknown stages, so this script stays in
+#                    sync with the pipeline automatically.
+#
+# Options:
+#   --bids-root PATH   BIDS dataset root (required for the setup stage)
+#   --dry-run           Print sbatch commands without submitting
+#
+# Environment:
+#   IPROC_PYTHON   Path to a python3 with PyYAML installed, used to parse
+#                  the profile. Auto-detected if unset (repo .venv, then
+#                  plain `python3` on PATH).
+#
+# Example:
+#   ./iproc-run site_profiles/sherlock.yaml subjects.txt setup \
+#       --bids-root $OAK/data/my_bids_dataset
+#   ./iproc-run site_profiles/sherlock.yaml subjects.txt bet
+#   ./iproc-run site_profiles/sherlock.yaml subjects.txt setup --dry-run
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── Locate a python3 with PyYAML ──
+find_python() {
+    local candidates=()
+    [[ -n "${IPROC_PYTHON:-}" ]] && candidates+=("$IPROC_PYTHON")
+    candidates+=("$SCRIPT_DIR/../.venv/bin/python3" "python3" "python")
+    for c in "${candidates[@]}"; do
+        if command -v "$c" >/dev/null 2>&1 && "$c" -c "import yaml" >/dev/null 2>&1; then
+            command -v "$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ── Parse args ──
+if [[ $# -lt 3 ]]; then
+    echo "Usage: $0 <profile.yaml> <subjects.txt> <stage> [options]"
+    echo "Run '$0 --help' for details."
+    exit 1
+fi
+
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    head -33 "$0" | tail -31
+    exit 0
+fi
+
+PROFILE="$1"
+SUBJECTS_FILE="$2"
+STAGE="$3"
+shift 3
+
+BIDS_ROOT=""
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --bids-root) BIDS_ROOT="$2"; shift 2 ;;
+        --dry-run)   DRY_RUN=true; shift ;;
+        --help|-h)   head -33 "$0" | tail -31; exit 0 ;;
+        *)           echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
+
+# ── Validate ──
+if [[ ! -f "$PROFILE" ]]; then
+    echo "ERROR: Site profile not found: $PROFILE"
+    exit 1
+fi
+
+if [[ ! -f "$SUBJECTS_FILE" ]]; then
+    echo "ERROR: Subjects file not found: $SUBJECTS_FILE"
+    exit 1
+fi
+
+if [[ "$STAGE" == "setup" ]] && [[ -z "$BIDS_ROOT" ]]; then
+    echo "ERROR: --bids-root is required for the setup stage"
+    exit 1
+fi
+
+PYTHON="$(find_python)" || {
+    echo "ERROR: No python3 with PyYAML found. Set IPROC_PYTHON to one, e.g.:"
+    echo "  IPROC_PYTHON=/path/to/python3 $0 ..."
+    exit 1
+}
+
+# ── Resolve the profile for this stage ──
+# Emits shell assignments on stdout that are `eval`'d below. Values are
+# double-quoted (not shlex-quoted) so that shell variables already present
+# in the profile (e.g. Sherlock's $SCRATCH) are expanded by *this* shell at
+# submission time, using whatever environment iproc-run is run in.
+PROFILE_VARS="$("$PYTHON" - "$PROFILE" "$STAGE" <<'PYEOF'
+import sys
+import yaml
+
+profile_path, stage = sys.argv[1], sys.argv[2]
+with open(profile_path) as f:
+    profile = yaml.safe_load(f) or {}
+
+resources = profile.get("resources", {}) or {}
+base = dict(resources.get("default", {}) or {})
+override = dict(resources.get(stage, {}) or {})
+merged = {**base, **override}
+
+partitions = profile.get("partitions", {}) or {}
+partition_key = merged.get("partition", "default")
+partition = partitions.get(partition_key, partitions.get("default", ""))
+
+storage = profile.get("storage", {}) or {}
+binds = profile.get("binds", []) or []
+
+
+def emit(key, value):
+    value = "" if value is None else str(value)
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    print(f'{key}="{escaped}"')
+
+
+emit("IPROC_NAME", profile.get("name", ""))
+emit("IPROC_CONTAINER", profile.get("container", ""))
+emit("IPROC_BINDS", ",".join(binds))
+emit("IPROC_CODE_ROOT", storage.get("code_root", "."))
+emit("IPROC_OUTPUT_ROOT", storage.get("output_root", "."))
+emit("IPROC_PARTITION", partition)
+emit("IPROC_TIME", merged.get("time", "08:00:00"))
+emit("IPROC_MEM", merged.get("mem", "32G"))
+emit("IPROC_CPUS", merged.get("cpus", 4))
+PYEOF
+)" || {
+    echo "ERROR: Failed to parse site profile: $PROFILE"
+    exit 1
+}
+# Profile values may reference shell variables that are only defined on the
+# target site (e.g. Sherlock's $SCRATCH) and not in this shell — expand them
+# to empty rather than aborting under `set -u`.
+set +u
+eval "$PROFILE_VARS"
+set -u
+
+if [[ ! -f "$IPROC_CONTAINER" ]] && [[ "$DRY_RUN" == "false" ]]; then
+    echo "ERROR: Container not found: $IPROC_CONTAINER"
+    exit 1
+fi
+
+BIND_ARG=""
+[[ -n "$IPROC_BINDS" ]] && BIND_ARG="--bind $IPROC_BINDS"
+
+# ── Read subjects ──
+SUBJECTS=()
+while IFS= read -r line; do
+    line=$(echo "$line" | xargs)
+    [[ -z "$line" ]] && continue
+    [[ "$line" == \#* ]] && continue
+    SUBJECTS+=("$line")
+done < "$SUBJECTS_FILE"
+
+if [[ ${#SUBJECTS[@]} -eq 0 ]]; then
+    echo "ERROR: No subjects found in $SUBJECTS_FILE"
+    exit 1
+fi
+
+echo "============================================"
+echo "  iProc Batch Submission"
+echo "  Profile: $IPROC_NAME ($PROFILE)"
+echo "  Stage: $STAGE"
+echo "  Subjects: ${#SUBJECTS[@]}"
+echo "  Partition: $IPROC_PARTITION  Time: $IPROC_TIME  Mem: $IPROC_MEM  CPUs: $IPROC_CPUS"
+echo "  Container: $IPROC_CONTAINER"
+echo "  Code root: $IPROC_CODE_ROOT"
+echo "  Output root: $IPROC_OUTPUT_ROOT"
+[[ -n "$BIDS_ROOT" ]] && echo "  BIDS root: $BIDS_ROOT"
+echo "============================================"
+echo ""
+
+# ── Submit jobs ──
+for sub in "${SUBJECTS[@]}"; do
+    CONFIG="${IPROC_OUTPUT_ROOT}/mri_data/${sub}/subject_lists/${sub}.cfg"
+    JOB_NAME="iproc_${STAGE}_${sub}"
+    LOG_DIR="${IPROC_OUTPUT_ROOT}/mri_data/${sub}/logs"
+
+    BIDS_FLAG=""
+    if [[ "$STAGE" == "setup" ]] && [[ -n "$BIDS_ROOT" ]]; then
+        BIDS_FLAG="--bids ${BIDS_ROOT}/sub-${sub}"
+    fi
+
+    SBATCH_CMD="sbatch \
+        --job-name=${JOB_NAME} \
+        --partition ${IPROC_PARTITION} \
+        --time ${IPROC_TIME} \
+        --mem ${IPROC_MEM} \
+        --cpus-per-task ${IPROC_CPUS} \
+        --output=${LOG_DIR}/slurm_${STAGE}_%j.log \
+        --error=${LOG_DIR}/slurm_${STAGE}_%j.err \
+        --wrap=\"apptainer exec ${BIND_ARG} ${IPROC_CONTAINER} \
+            bash -c 'set -e && \
+                     source /opt/iproc-venv/bin/activate && \
+                     cd ${IPROC_CODE_ROOT} && \
+                     pip install -e . 2>&1 | tail -1 && \
+                     mkdir -p ${LOG_DIR} && \
+                     python iProc.py -c ${CONFIG} -s ${STAGE} ${BIDS_FLAG} --executor local'\""
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[DRY RUN] $sub:"
+        echo "  $SBATCH_CMD"
+        echo ""
+    else
+        mkdir -p "$LOG_DIR" 2>/dev/null || true
+        echo "Submitting ${sub} (${STAGE})..."
+        eval "$SBATCH_CMD"
+    fi
+done
+
+echo ""
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo "Dry run complete. No jobs submitted."
+else
+    echo "Submitted ${#SUBJECTS[@]} jobs. Monitor with: squeue -u \$USER"
+fi
