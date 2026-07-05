@@ -63,3 +63,56 @@ def test_low_confidence_generate_refuses_without_force(tmp_path):
     assert r.returncode != 0
     r2 = _run("bids_generate.py", out, "--iproc-dir", gen, "--codedir", REPO, "--force")
     assert r2.returncode == 0, r2.stderr
+
+def test_multisession_partial_fieldmap_gates_per_session(tmp_path):
+    # sub-01/ses-01: magnitude1 + phasediff (Siemens) + T1 + func bold.
+    # sub-01/ses-02: func bold ONLY (no fmap/). The fmap-less session's BOLD
+    # must NOT be silently deselected via the subject-wide fieldmap rollup.
+    ds = tmp_path / "ds"
+    s1 = ds / "sub-01" / "ses-01"
+    (s1 / "fmap").mkdir(parents=True)
+    (s1 / "anat").mkdir(); (s1 / "func").mkdir()
+    (s1 / "fmap" / "sub-01_ses-01_magnitude1.nii.gz").write_bytes(b"")
+    (s1 / "fmap" / "sub-01_ses-01_phasediff.nii.gz").write_bytes(b"")
+    (s1 / "fmap" / "sub-01_ses-01_phasediff.json").write_text(
+        json.dumps({"Manufacturer": "Siemens", "EchoTime1": 0.00492,
+                    "EchoTime2": 0.00738, "EchoTimeDifference": 0.00246}))
+    (s1 / "anat" / "sub-01_ses-01_T1w.nii.gz").write_bytes(b"")
+    (s1 / "func" / "sub-01_ses-01_task-rest_bold.nii.gz").write_bytes(b"")
+
+    s2 = ds / "sub-01" / "ses-02" / "func"
+    s2.mkdir(parents=True)
+    (s2 / "sub-01_ses-02_task-rest_bold.nii.gz").write_bytes(b"")
+
+    man = tmp_path / "m.yaml"
+    rd = _run("bids_discover.py", ds, "--output", man)
+    assert rd.returncode == 0, rd.stderr
+
+    # NO flags: must block (non-zero) and name ses-02.
+    gen = tmp_path / "gen"
+    r = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO)
+    assert r.returncode != 0, "expected block for fmap-less ses-02 BOLD"
+    assert "ses-02" in r.stderr, r.stderr
+
+    # --allow-no-fieldmap: exits 0, deselects only ses-02 BOLD.
+    gen2 = tmp_path / "gen2"
+    r2 = _run("bids_generate.py", man, "--iproc-dir", gen2, "--codedir", REPO,
+              "--allow-no-fieldmap")
+    assert r2.returncode == 0, r2.stderr
+
+    import csv
+    scan = next(gen2.rglob("scanlist_*.csv"))
+    with open(scan) as f:
+        rows = list(csv.DictReader(f))
+
+    def _bold(ses):
+        return next(r for r in rows
+                    if r["SESSION_ID"] == ses and r["TYPE"] == "REST")
+
+    assert _bold("01")["Analyze"] == "1", "ses-01 BOLD (has fmap) must analyze"
+    assert _bold("02")["Analyze"] == "0", "ses-02 BOLD (no fmap) must deselect"
+
+    # Cross-session anat broadcast: ses-02 BOLD references ses-01's selected T1.
+    t1_row = next(r for r in rows
+                  if r["TYPE"] == "ANAT" and r["Analyze"] == "1")
+    assert _bold("02")["ANAT"] == t1_row["ANAT"] != "0"

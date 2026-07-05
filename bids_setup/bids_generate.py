@@ -171,6 +171,40 @@ SCANLIST_COLUMNS = [
 ]
 
 
+def session_fieldmap_type(ses_data: dict) -> str:
+    """Return the fieldmap regime (preptool vocabulary) for a single session.
+
+    Prefers the per-session value written by bids_discover.py; falls back to the
+    session's detection block for manifests generated before that field existed.
+    """
+    ft = ses_data.get("fieldmap_type")
+    if ft:
+        return ft
+    return (ses_data.get("detection") or {}).get("preptool") or "none"
+
+
+def session_has_fieldmap(ses_data: dict) -> bool:
+    """Whether THIS session has a usable fieldmap for its own regime."""
+    fmap_type = session_fieldmap_type(ses_data)
+    if fmap_type == "topup":
+        return bool(ses_data.get("fmap_ap") and ses_data.get("fmap_pa"))
+    if fmap_type in ("fsl_prepare_fieldmap", "direct"):
+        return bool(ses_data.get("fmap_mag") and ses_data.get("fmap_phase"))
+    return False
+
+
+def bold_runs_without_fieldmap(sub_data: dict) -> list[tuple[str, dict]]:
+    """List (session_label, bold) for BOLD runs whose own session lacks a fmap."""
+    missing = []
+    for ses_label in sorted(sub_data["sessions"].keys()):
+        ses_data = sub_data["sessions"][ses_label]
+        if session_has_fieldmap(ses_data):
+            continue
+        for bold in ses_data.get("bold", []):
+            missing.append((ses_label, bold))
+    return missing
+
+
 def generate_scanlist_csv(
     sub_data: dict,
     output_path: Path,
@@ -181,7 +215,6 @@ def generate_scanlist_csv(
 
     sub_label = sub_data["sub_label"]
     t1_sel = sub_data["t1_selection"]
-    fmap_type = sub_data.get("fieldmap_type", "none")
     sessions = sub_data["sessions"]
 
     # Broadcast the selected T1's series number across every session so BOLD
@@ -212,17 +245,17 @@ def generate_scanlist_csv(
         fmap_ap_sn = fmaps_ap[0]["series_number"] if fmaps_ap else 0
         fmap_pa_sn = fmaps_pa[0]["series_number"] if fmaps_pa else 0
 
-        # Which fieldmap columns apply depends on the regime.
-        if fmap_type == "topup":
-            has_fmap = bool(fmap_ap_sn and fmap_pa_sn)
-        elif fmap_type in ("fsl_prepare_fieldmap", "direct"):
-            has_fmap = bool(fmap_mag_sn and fmap_phase_sn)
-        else:  # none
-            has_fmap = False
+        # Fieldmap availability and routing are PER SESSION — never inherit
+        # another session's regime. A session with its own phasediff emits
+        # FMAP_MAG/FMAP_PHASE; a topup session emits FMAP_AP/FMAP_PA; a session
+        # with no usable fieldmap is handled by the gate below.
+        has_fmap = session_has_fieldmap(ses_data)
 
-        # BOLD runs are analyzed if they have a usable fieldmap, or if the user
-        # explicitly opted into fieldmap-free processing.
-        analyze_bold = 1 if (has_fmap or allow_no_fieldmap) else 0
+        # A BOLD run is analyzed only if THIS session has a usable fieldmap.
+        # Never silently deselect: generate_all() already blocked with a non-zero
+        # exit unless --allow-no-fieldmap was passed. Under that flag we still
+        # deselect fmap-less runs (Analyze=0) but emit a per-run WARNING below.
+        analyze_bold = 1 if has_fmap else 0
 
         # ANAT rows
         for anat in anats:
@@ -237,6 +270,12 @@ def generate_scanlist_csv(
 
         # BOLD rows
         for bold in bolds:
+            if not has_fmap and allow_no_fieldmap:
+                log.warning(
+                    "sub-%s/ses-%s %s run-%s: no usable fieldmap — "
+                    "deselected (Analyze=0) under --allow-no-fieldmap",
+                    sub_label, ses_label, bold["task"], bold["run"],
+                )
             rows.append(_row(
                 SESSION_ID=ses_label,
                 Analyze=analyze_bold,
@@ -396,21 +435,24 @@ def generate_all(
                   "--force to proceed anyway.")
         sys.exit(2)
 
-    # 2. Refuse to silently deselect BOLD runs when no usable fieldmap exists.
-    #    Only fires when there ARE BOLD runs that would be affected; a dataset
-    #    with no BOLD has nothing to deselect.
-    no_fmap = []
-    for name, sd in manifest["subjects"].items():
-        has_bold = any(s.get("bold") for s in sd["sessions"].values())
-        if sd.get("fieldmap_type", "none") == "none" and has_bold:
-            no_fmap.append(name)
-    if no_fmap and not allow_no_fieldmap:
-        log.error(
-            "No usable fieldmap detected for subject(s) with BOLD runs: %s",
-            ", ".join(sorted(no_fmap)),
-        )
-        log.error("Re-run with --allow-no-fieldmap to process BOLD without "
-                  "distortion correction (runs will be marked Analyze=1).")
+    # 2. Refuse to silently deselect BOLD runs when their OWN session has no
+    #    usable fieldmap. This is per session (per BOLD run), NOT the subject-
+    #    wide rollup: a subject where one session has a fieldmap but another
+    #    session's BOLD runs do not must still block here — otherwise those runs
+    #    would be silently set to Analyze=0.
+    missing = []  # (subject, session, bold)
+    for name, sd in sorted(manifest["subjects"].items()):
+        for ses_label, bold in bold_runs_without_fieldmap(sd):
+            missing.append((name, ses_label, bold))
+    if missing and not allow_no_fieldmap:
+        log.error("BOLD run(s) have no usable fieldmap in their own session:")
+        for name, ses_label, bold in missing:
+            log.error(
+                "  sub-%s/ses-%s %s run-%s",
+                name, ses_label, bold["task"], bold["run"],
+            )
+        log.error("Re-run with --allow-no-fieldmap to deselect these runs "
+                  "(they will be written with Analyze=0).")
         sys.exit(3)
 
     # 1. tasktype_consolidated.csv
@@ -495,8 +537,9 @@ def main():
                         help="Proceed even if any subject has a low-confidence "
                              "fieldmap detection")
     parser.add_argument("--allow-no-fieldmap", action="store_true",
-                        help="Process BOLD runs even when no usable fieldmap was "
-                             "detected (otherwise this is an error)")
+                        help="Deselect (Analyze=0) BOLD runs whose own session has "
+                             "no usable fieldmap, emitting a per-run warning, "
+                             "instead of erroring out")
 
     args = parser.parse_args()
 

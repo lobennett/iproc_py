@@ -212,6 +212,12 @@ def discover_subject(
             "preptool": decision.evidence.get("preptool"),
             "warnings": list(decision.warnings),
         }
+        # Per-session fieldmap regime (preptool vocabulary), so bids_generate.py
+        # can route and gate each session independently instead of relying on
+        # the subject-wide rollup. A subject where one session has a fieldmap
+        # and another does not must NOT have the fmap-less session's BOLD runs
+        # silently deselected via the rollup.
+        ses_data["fieldmap_type"] = decision.evidence.get("preptool") or "none"
 
         # Synthetic series numbers for pepolar AP/PA EPIs when JSON lacks them.
         epi_sn = 20
