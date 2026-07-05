@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""iproc-init — interactive (or flag-driven) wizard that writes an iProc
+site profile YAML consumable by launch/iproc-run.
+
+Usage:
+  iproc-init --out <profile.yaml> [--non-interactive FLAGS...]
+
+Non-interactive mode (for scripting/tests) accepts flags for the handful of
+settings that vary per site; --name is required, everything else falls back
+to a sensible default (or an input() prompt in interactive mode).
+
+Interactive mode prompts for: name, scheduler, container path, bind mounts,
+code_root, output_root, default partition, long partition, FSL mode
+(mapped/exact), and — when FSL mode is exact — whether the exact FSL
+tarballs are already staged.
+
+Either way, the written profile has the same top-level schema as
+src/iproc/data/site_profiles/*.yaml (name, scheduler, container, binds,
+storage, partitions, resources, fsl, modules), and its per-stage
+`resources` defaults match generic-slurm.yaml:
+  default:                 time 08:00:00, mem 32G, cpus 4
+  setup:                   time 24:00:00, mem 32G, cpus 16
+  combine_and_apply_warp:  time 08:00:00, mem 64G, cpus 8
+"""
+
+import argparse
+import sys
+
+import yaml
+
+# Per-stage resource defaults, matching src/iproc/data/site_profiles/generic-slurm.yaml.
+DEFAULT_RESOURCES = {
+    "default": {"time": "08:00:00", "mem": "32G", "cpus": 4},
+    "setup": {"time": "24:00:00", "mem": "32G", "cpus": 16},
+    "combine_and_apply_warp": {"time": "08:00:00", "mem": "64G", "cpus": 8},
+}
+
+# Keys that launch/iproc-run's profile parser expects at the top level.
+REQUIRED_TOP_LEVEL_KEYS = (
+    "name",
+    "scheduler",
+    "container",
+    "binds",
+    "storage",
+    "partitions",
+    "resources",
+    "fsl",
+    "modules",
+)
+
+
+def parse_binds(raw):
+    """Parse a comma-separated bind list into a list of 'host:container' strings."""
+    if not raw:
+        return []
+    return [b.strip() for b in raw.split(",") if b.strip()]
+
+
+def build_profile(
+    name,
+    scheduler,
+    container,
+    binds,
+    code_root,
+    output_root,
+    default_partition,
+    long_partition,
+    fsl_mode,
+):
+    partitions = {"default": default_partition}
+    if long_partition:
+        partitions["long"] = long_partition
+
+    resources = {
+        "default": dict(DEFAULT_RESOURCES["default"]),
+        "setup": dict(DEFAULT_RESOURCES["setup"]),
+        "combine_and_apply_warp": dict(DEFAULT_RESOURCES["combine_and_apply_warp"]),
+    }
+    # Route setup to the long partition when the site has one, mirroring
+    # the shipped Sherlock profile's convention.
+    if long_partition:
+        resources["setup"]["partition"] = "long"
+
+    profile = {
+        "name": name,
+        "scheduler": scheduler,
+        "container": container,
+        "binds": binds,
+        "storage": {"code_root": code_root, "output_root": output_root},
+        "partitions": partitions,
+        "resources": resources,
+        "fsl": {"mode": fsl_mode},
+        "modules": [],
+    }
+    return profile
+
+
+def assert_matches_iproc_run_schema(profile):
+    """Smoke check: the profile has every top-level key launch/iproc-run's
+    profile parser reads (see the PYEOF block in launch/iproc-run)."""
+    missing = [k for k in REQUIRED_TOP_LEVEL_KEYS if k not in profile]
+    if missing:
+        raise AssertionError(
+            f"Generated profile is missing keys iproc-run requires: {missing}"
+        )
+    assert "code_root" in profile["storage"]
+    assert "output_root" in profile["storage"]
+    assert "default" in profile["partitions"]
+    assert "default" in profile["resources"]
+
+
+def prompt(question, default=None):
+    suffix = f" [{default}]" if default is not None else ""
+    answer = input(f"{question}{suffix}: ").strip()
+    return answer or default
+
+
+def run_interactive():
+    print("iProc site profile wizard")
+    print("--------------------------")
+    name = prompt("Site name", "mysite")
+    scheduler = prompt("Scheduler", "slurm")
+    container = prompt("Container path (.sif)", "./container/iproc.sif")
+    binds_raw = prompt("Bind mounts (comma-separated host:container)", "")
+    binds = parse_binds(binds_raw)
+    code_root = prompt("Code root", ".")
+    output_root = prompt("Output root", "./derivatives/iproc")
+    default_partition = prompt("Default SLURM partition", "normal")
+    long_partition = prompt("Long-running-stage SLURM partition (blank for none)", "")
+    fsl_mode = prompt("FSL mode (mapped/exact)", "mapped")
+    if fsl_mode == "exact":
+        prompt("Are exact FSL tarballs already staged? (yes/no)", "no")
+
+    return build_profile(
+        name=name,
+        scheduler=scheduler,
+        container=container,
+        binds=binds,
+        code_root=code_root,
+        output_root=output_root,
+        default_partition=default_partition,
+        long_partition=long_partition or None,
+        fsl_mode=fsl_mode,
+    )
+
+
+def run_non_interactive(args):
+    if not args.name:
+        print("ERROR: --name is required in --non-interactive mode", file=sys.stderr)
+        sys.exit(1)
+
+    binds = list(args.bind or [])
+
+    return build_profile(
+        name=args.name,
+        scheduler=args.scheduler,
+        container=args.container,
+        binds=binds,
+        code_root=args.code_root,
+        output_root=args.output_root,
+        default_partition=args.partition,
+        long_partition=args.long_partition,
+        fsl_mode=args.fsl_mode,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="iproc-init",
+        description="Interactive wizard that writes an iProc site profile YAML.",
+    )
+    parser.add_argument("--out", required=True, help="Path to write the profile YAML to.")
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Skip prompts; use the flags below (with defaults) instead.",
+    )
+    parser.add_argument("--name", help="Site profile name.")
+    parser.add_argument("--scheduler", default="slurm", help="Scheduler (default: slurm).")
+    parser.add_argument(
+        "--container", default="./container/iproc.sif", help="Path to iproc.sif."
+    )
+    parser.add_argument(
+        "--code-root", default=".", help="iProc checkout used inside the container."
+    )
+    parser.add_argument(
+        "--output-root",
+        default="./derivatives/iproc",
+        help="Where per-subject configs/logs/derivatives live.",
+    )
+    parser.add_argument(
+        "--partition", default="normal", help="Default SLURM partition."
+    )
+    parser.add_argument(
+        "--long-partition",
+        default=None,
+        help="Optional SLURM partition for long-running stages (e.g. setup).",
+    )
+    parser.add_argument(
+        "--bind",
+        action="append",
+        default=[],
+        help="Apptainer bind mount 'host:container'; repeatable.",
+    )
+    parser.add_argument(
+        "--fsl-mode",
+        default="mapped",
+        choices=["mapped", "exact"],
+        help="FSL output-type handling mode (default: mapped).",
+    )
+
+    args = parser.parse_args()
+
+    if args.non_interactive:
+        profile = run_non_interactive(args)
+    else:
+        profile = run_interactive()
+
+    assert_matches_iproc_run_schema(profile)
+
+    with open(args.out, "w") as f:
+        yaml.safe_dump(profile, f, sort_keys=False)
+
+    print(f"Wrote site profile: {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
