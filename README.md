@@ -14,6 +14,8 @@ validation harness. See `docs/`.
 > reference is upstream iProc, not any fork.
 
 ## Install (local, for tests/dev)
-    uv venv --python 3.11 .venv && source .venv/bin/activate
+    uv venv --seed --python 3.11 .venv && source .venv/bin/activate
     pip install -e '.[test]'
     iproc --help
+
+(`--seed` ensures `pip` is present in the venv; `uv venv` alone does not install it.)
