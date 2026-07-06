@@ -23,6 +23,7 @@ docs = ["mkdocs", "mkdocs-material"]
 [project.scripts]
 iproc = "iproc.cli.iproc:main"
 "iProc.py" = "iproc.cli.iproc:main"
+iproc-app = "iproc.app.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/iproc"]
