@@ -204,7 +204,13 @@ def discover_subject(
         # Regime-aware detection (phasediff / pepolar / direct / none) via the
         # shared iproc.fieldmap module. Emits warnings to stderr for every
         # auto-decision and records confidence/rationale into the manifest.
-        decision = detect_regime(fmap_dir)
+        # Pass a pybids metadata lookup so BIDS *inheritance* is resolved
+        # (root-level phasediff.json/magnitude1.json with no per-session
+        # sidecar, as in MSC) — otherwise Manufacturer/echo-times read as
+        # "missing" and the fieldmap is spuriously flagged low-confidence.
+        decision = detect_regime(
+            fmap_dir, metadata_lookup=lambda p: _get_metadata(layout, str(p))
+        )
         ses_data["detection"] = {
             "regime": decision.value,
             "confidence": decision.confidence,

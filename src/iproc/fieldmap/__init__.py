@@ -62,8 +62,28 @@ def _delta_te_ms(js: dict) -> float | None:
     return None
 
 
-def detect_regime(fmap_dir: Path) -> Decision:
+def detect_regime(fmap_dir: Path, metadata_lookup=None) -> Decision:
+    """Classify the fieldmap regime in ``fmap_dir``.
+
+    ``metadata_lookup`` (optional): a callable ``path -> dict`` returning the
+    sidecar metadata for a file. Pass ``layout.get_metadata`` (via a wrapper)
+    so BIDS *inheritance* is resolved — many real datasets (e.g. MSC) put
+    ``Manufacturer``/``EchoTime1``/``EchoTime2`` in a root-level
+    ``phasediff.json``/``magnitude1.json`` and carry NO per-session sidecar.
+    When not provided, falls back to reading the file's own ``.json`` sidecar
+    (``_load_json``), which is correct only for datasets without inheritance.
+    """
     fmap_dir = Path(fmap_dir)
+
+    def _meta(p: Path) -> dict:
+        if metadata_lookup is not None:
+            try:
+                return metadata_lookup(p) or {}
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[fieldmap] metadata_lookup failed for %s: %s", p, e)
+                return {}
+        return _load_json(p)
+
     if not fmap_dir.is_dir():
         return Decision("none", "high", "no fmap/ directory present")
     files = sorted(p for p in fmap_dir.iterdir()
@@ -79,7 +99,7 @@ def detect_regime(fmap_dir: Path) -> Decision:
 
     if has_epi and has_dir:
         epis = [p for p in files if "_epi.nii" in p.name]
-        pe = [ _load_json(p).get("PhaseEncodingDirection", "") for p in epis ]
+        pe = [ _meta(p).get("PhaseEncodingDirection", "") for p in epis ]
         conf = "high" if len(set(d for d in pe if d)) >= 2 else "low"
         if conf == "low":
             warnings.append("pepolar detected but <2 distinct PhaseEncodingDirection values; VERIFY")
@@ -90,7 +110,15 @@ def detect_regime(fmap_dir: Path) -> Decision:
 
     if has_phase and has_mag:
         phase = next(p for p in files if "phase" in p.name)
-        js = _load_json(phase)
+        js = _meta(phase)
+        # Siemens gre fieldmaps split the two echo times across the phase and
+        # magnitude sidecars; merge the magnitude metadata so delta_te resolves.
+        mag = next((p for p in files if re.search(r"_magnitude[12]?\.nii", p.name)), None)
+        if mag is not None:
+            mjs = _meta(mag)
+            for k in ("Manufacturer", "EchoTime1", "EchoTime2", "EchoTimeDifference"):
+                if k not in js and k in mjs:
+                    js[k] = mjs[k]
         mfr = _manufacturer(js)
         dte = _delta_te_ms(js)
         ge = mfr in ("GE", "PHILIPS")
