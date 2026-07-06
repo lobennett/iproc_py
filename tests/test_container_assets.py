@@ -57,6 +57,69 @@ def test_module_shim_maps_four_fsl_versions():
         assert v in s
 
 
+def test_module_shim_warns_on_unknown_spec():
+    # CON#7: the catch-all for unrecognized `module load` specs must warn to
+    # stderr (unlike a silent Lmod no-op) so a typo'd/unknown FSL version
+    # surfaces in logs instead of running under whatever FSL is active.
+    s = (C / "module_shim.sh").read_text()
+    assert "unrecognized module" in s
+    assert ">&2" in s
+
+
+def test_def_wraps_more_than_default_fsl():
+    # CON#4 / I-g: the hex-float wrapper install must iterate over every real
+    # FSL dir (not just /opt/fsl-5.0.10), so the exact-from-Sherlock path where
+    # 5.0.4 and 5.0.10 are separate real dirs also gets 5.0.4 wrapped.
+    d = (C / "iproc.def").read_text()
+    # The wrap step loops over FSL dirs and references 5.0.4 among them.
+    assert "/opt/fsl-5.0.4" in d
+    # Loop touches multiple versions in the wrap step (5.0.10 alone is not
+    # enough); require the loop to enumerate several real dirs.
+    for v in ["/opt/fsl-4.1.9", "/opt/fsl-5.0.4", "/opt/fsl-5.0.8", "/opt/fsl-5.0.10"]:
+        assert v in d
+    # Real binary is moved aside per-dir to a sibling `<tool>.real`, not a
+    # single hardcoded /opt/.fsl_orig path.
+    assert ".real" in d
+    assert "/opt/.fsl_orig" not in d
+
+
+def test_wrappers_resolve_sibling_real_binary():
+    # The wrappers must call their OWN version's real binary (sibling
+    # `<tool>.real`), not a single hardcoded /opt/.fsl_orig/<tool>, so each
+    # wrapped FSL dir invokes the correct binary.
+    for w in ["flirt_wrapper.sh", "convert_xfm_wrapper.sh"]:
+        text = (C / w).read_text()
+        assert "/opt/.fsl_orig" not in text
+        assert ".real" in text
+
+
+def test_no_tracked_file_references_ignored_internal_docs():
+    # I-h: the gitignored internal-docs dir is absent from a clone, so any
+    # tracked link into it 404s. The only allowed mention is the .gitignore
+    # rule itself. The needle is assembled from parts so THIS test file does
+    # not itself trip the check.
+    needle = "docs/" + "super" + "powers/"
+    repo = C.parent
+    files = subprocess.run(
+        ["git", "-C", str(repo), "ls-files"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    offenders = []
+    for rel in files:
+        if rel == ".gitignore":
+            continue
+        p = repo / rel
+        try:
+            content = p.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if needle in content:
+            offenders.append(rel)
+    assert not offenders, f"tracked files reference {needle}: {offenders}"
+
+
 # ---------------------------------------------------------------------------
 # Hex-float wrapper conversion logic (guards hex-float fix #1). The predicate
 # must convert ONLY genuine C99 hex-float matrices and leave decimal matrices

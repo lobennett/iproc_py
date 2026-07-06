@@ -3,8 +3,17 @@
 # the iProc Apptainer container.  Handles only `module load fsl/<version>*`
 # patterns, which is all iProc needs.  Every other module command is a no-op.
 #
-# Sourced automatically via BASH_ENV and /etc/profile.d/ so that both
-# interactive shells and Python subprocess(shell=True) calls pick it up.
+# Delivery: this file defines `module` and does `export -f module` (see
+# bottom). The EXPORTED FUNCTION is the mechanism that makes `module`
+# available inside iProc's subprocess(shell=True) -> `/bin/sh -c "module load
+# fsl/X && cmd"` calls: a parent `bash` that sources this shim exports the
+# function into the environment, and child shells (/bin/sh is bash in this
+# image) import it. This does NOT work via BASH_ENV — bash invoked as `sh`
+# non-interactively does not read BASH_ENV. It is also placed in
+# /etc/profile.d/ and referenced by BASH_ENV for interactive and non-interactive
+# `bash -c` convenience, but shell=True delivery is the exported function only.
+# Therefore a bare `apptainer exec CONTAINER <python>` with no parent bash that
+# sourced this shim is unsupported (module would be undefined).
 
 module() {
     local action="$1"
@@ -30,7 +39,11 @@ module() {
             export FSLDIR=/opt/fsl-6.0.1
             ;;
         *)
-            # All other module loads are no-ops in the container
+            # Unrecognized spec: unlike real Lmod this shim can't load it, so
+            # surface it in logs instead of silently continuing under whatever
+            # FSL is currently active (a typo'd version would otherwise run the
+            # wrong FSL with no trace).
+            echo "WARNING: module_shim: unrecognized module '$spec', leaving FSLDIR unchanged" >&2
             return 0
             ;;
     esac

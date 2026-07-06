@@ -53,8 +53,9 @@ hand, once, on Sherlock, alongside this package:
    in the next section.
 
 This is a manual, interactive Sherlock activity (with Logan), not something
-this task's scripts automate — see `docs/superpowers/plans/2026-07-04-iproc-python-package.md`
-("Post-plan: interactive Sherlock validation").
+this task's scripts automate — it is the "Post-plan: interactive Sherlock
+validation" step: build the container on Sherlock, construct the baseline as
+above, then run the Phase B comparisons below.
 
 ## Running Phase B
 
@@ -159,9 +160,9 @@ run on a real Siemens gradient-echo phasediff dataset —
 [MSC (Midnight Scan Club), `ds000224`](https://openneuro.org/datasets/ds000224)
 — to confirm the Siemens/phasediff fieldmap regime (this package's default,
 matching upstream) works correctly on real multi-session BIDS data, not
-just the synthetic fixtures used in unit tests. This is the "real second
-regime" check referenced in
-`docs/superpowers/specs/2026-07-04-iproc-python-package-design.md`. GE
+just the synthetic fixtures used in unit tests. This is the design's "real
+second regime" check: exercise the upstream-default fieldmap path on a real,
+externally-published dataset, not only hand-built config fixtures. GE
 (Logan's own data) is a *new* capability relative to upstream — which only
 ever saw Siemens/Varian in practice — and is **itself not yet validated**:
 its own end-to-end check on real data is also pending Phase B, not something
@@ -194,6 +195,12 @@ validation-status line in `README.md` is updated from "Phase B pending" to
   task (`scripts/validate_against_baseline.sh`, `scripts/diff_tools/`, this
   document) provides the harness; running it is a separate, later,
   interactive Sherlock activity.
+- **In-container FSL version-switching under `shell=True` — Phase B.**
+  Confirming that the module shim's exported-function delivery actually makes
+  `module load fsl/<version>` switch FSLDIR inside iProc's
+  `subprocess(shell=True)` -> `/bin/sh -c` calls (and that each version's
+  hex-float wrapper resolves its own real binary) requires the built
+  container, so it is verified as part of Phase B, not in this test suite.
 
 Until Phase B is recorded as passing in `CHANGELOG.md`, treat this
 package's scientific output as **unverified against executed upstream

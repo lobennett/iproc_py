@@ -5,16 +5,28 @@
 # NEWMAT::SingularException — so this rewrites them to decimal.
 #
 # Baked into the image at build time (see iproc.def %post "Activate hex-float
-# wrappers"): the real binary is moved to /opt/.fsl_orig/convert_xfm and this
-# script is installed in its place, so the fix is ALWAYS active — no runtime
-# bind-mount required.  It is a safe no-op when FSL already emits decimal
-# matrices: only tokens that are *actually* C99 hex-float (contain both an
-# 0x/0X prefix AND a p/P binary exponent) are converted; every other byte is
-# left untouched, so decimal matrices pass through unchanged.
+# wrappers"): for every real FSL install, the real binary is moved aside to
+# `convert_xfm.real` NEXT TO this wrapper (same bin/ dir) and this script is
+# installed in its place, so the fix is ALWAYS active — no runtime bind-mount
+# required, and each FSL version calls its OWN real binary.  It is a safe
+# no-op when FSL already emits decimal matrices: only tokens that are
+# *actually* C99 hex-float (contain both an 0x/0X prefix AND a p/P binary
+# exponent) are converted; every other byte is left untouched, so decimal
+# matrices pass through unchanged.
 
 set -u
 
-"/opt/.fsl_orig/convert_xfm" "$@"
+# Locate the sibling real binary (`convert_xfm.real`) generically so the SAME
+# wrapper works for every wrapped FSL dir (5.0.4, 5.0.10, ...), each calling
+# its own version's real binary rather than a single hardcoded path.
+self="${BASH_SOURCE[0]:-$0}"
+case "$self" in
+    */*) _dir="$(cd "$(dirname "$self")" && pwd)" ;;
+    *)   _dir="$(cd "$(dirname "$(command -v "$self")")" && pwd)" ;;
+esac
+REAL_CONVERT_XFM="${_dir}/convert_xfm.real"
+
+"$REAL_CONVERT_XFM" "$@"
 ret=$?
 
 # If the real binary failed, do NOT touch the matrix — preserve its exit code

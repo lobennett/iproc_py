@@ -5,7 +5,7 @@ From: ubuntu:22.04
     Author Logan Bennett
     Description iProc v2.6 preprocessing pipeline container
     Version 1.1.0
-    iProc_Version v2.6.0-beta.3
+    iProc_Version v2.6.0-beta.4
 
 %help
     iProc preprocessing pipeline container for neuroimaging data.
@@ -21,9 +21,21 @@ From: ubuntu:22.04
     Usage (source the module shim + venv inside a bash -c so `module` and the
     console `iproc` entry point are both defined):
       apptainer exec --bind /path/to/data:/data iproc.sif \
-        bash -c "source /opt/module_shim.sh; \
-                 source /opt/iproc-venv/bin/activate; \
+        bash -c "source /opt/module_shim.sh && \
+                 source /opt/iproc-venv/bin/activate && \
                  iproc -c /data/config.cfg -s setup --bids /data/bids/sub-XX --executor local"
+
+    Why the `bash -c "source /opt/module_shim.sh && ..."` wrapper is REQUIRED:
+    iProc runs FSL via `subprocess(shell=True)` -> `/bin/sh -c "module load
+    fsl/X && <cmd>"`. `module` is made available to those inner shells by the
+    EXPORTED bash FUNCTION (`export -f module` in module_shim.sh): a parent
+    `bash` that has sourced the shim exports the function into the environment,
+    and child shells (/bin/sh is bash here) import it. It is NOT delivered via
+    BASH_ENV — bash invoked as `sh` (non-interactive) does not read BASH_ENV.
+    Consequently a bare `apptainer exec CONTAINER <python> ...` (or
+    `apptainer exec CONTAINER iproc ...`) with no sourcing bash parent leaves
+    `module` undefined and is unsupported; always go through the sourcing
+    `bash -c` above.
 
 # ============================================================================
 # FILES — only the module shim and FreeSurfer license need pre-staging
@@ -133,8 +145,14 @@ From: ubuntu:22.04
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
     update-alternatives --install /usr/bin/python  python  /usr/bin/python3.11 1
 
-    # Make /bin/sh point to bash (required for Python subprocess shell=True
-    # to pick up the module shim via BASH_ENV)
+    # Make /bin/sh point to bash. This is required so that iProc's
+    # subprocess(shell=True) -> `/bin/sh -c "module load fsl/X && cmd"` calls
+    # can see `module`: the shim EXPORTS a bash function (`export -f module`),
+    # and bash (even invoked as `sh`) imports exported functions from the
+    # environment, whereas a POSIX-only /bin/sh (e.g. dash) would not. NOTE:
+    # this is NOT about BASH_ENV — bash invoked as `sh` non-interactively does
+    # NOT read BASH_ENV; delivery is via the inherited exported function from a
+    # parent bash that sourced the shim (see %runscript / %help).
     ln -sf /bin/bash /bin/sh
 
     # ------------------------------------------------------------------
@@ -289,27 +307,39 @@ FSLEOF
     # actually emits decimal — the fix (see hex-float fix #1) becomes an
     # always-active no-op in that case rather than dead, unwired code.
     #
-    # We operate on the DEFAULT FSLDIR (/opt/fsl-5.0.10, which symlinks to
-    # /opt/fsl-5.0.8): move the real binary aside to /opt/.fsl_orig/ (where
-    # the wrapper calls it from) and install the wrapper in its place.
-    # Idempotent: the real binary is only moved aside once (guarded on
-    # /opt/.fsl_orig/<tool> not already existing).
+    # We wrap EVERY real (non-symlink) FSL install that actually ships the
+    # affected binaries — not just the default /opt/fsl-5.0.10. This matters
+    # for the "exact-from-Sherlock tarball" path (CON#4 / I-g): there
+    # /opt/fsl-5.0.4 and /opt/fsl-5.0.10 are SEPARATE real directories, so
+    # wrapping only 5.0.10 would leave 5.0.4/bin/{flirt,convert_xfm}
+    # unwrapped and the hex-float bug live in the most-rigorous validation
+    # path. For each real FSL dir we move the real binary aside to
+    # `<tool>.real` in the SAME bin/ dir and install the wrapper in its place;
+    # the wrapper locates its sibling `<tool>.real` generically, so each FSL
+    # version calls its own real binary.
+    # Idempotent: a dir is skipped if `<tool>.real` already exists.
     #
     # NOTE: whether this FSL build actually emits hex-float .mat files is a
     # Phase-B verification item (see docs/validation.md); the wrapper is
     # correct and harmless either way.
     echo "=== Activating hex-float flirt/convert_xfm wrappers ==="
-    DEFAULT_FSLBIN=/opt/fsl-5.0.10/bin
-    mkdir -p /opt/.fsl_orig
-    for tool in flirt convert_xfm; do
-        if [[ -f "${DEFAULT_FSLBIN}/${tool}" ]] && [[ ! -e "/opt/.fsl_orig/${tool}" ]]; then
-            mv "${DEFAULT_FSLBIN}/${tool}" "/opt/.fsl_orig/${tool}"
-            cp "/opt/${tool}_wrapper.sh" "${DEFAULT_FSLBIN}/${tool}"
-            chmod +x "${DEFAULT_FSLBIN}/${tool}"
-            echo "  wrapped ${tool}: real binary -> /opt/.fsl_orig/${tool}"
-        else
-            echo "  WARNING: could not wrap ${tool} (missing ${DEFAULT_FSLBIN}/${tool} or already wrapped)"
-        fi
+    for fsldir in /opt/fsl-4.0.3 /opt/fsl-4.1.9 /opt/fsl-5.0.4 /opt/fsl-5.0.8 /opt/fsl-5.0.10 /opt/fsl-6.0.7; do
+        # Only real dirs (skip the mapping symlinks so we wrap each backing
+        # install exactly once) that actually contain BOTH affected binaries.
+        [[ -d "$fsldir" ]] && [[ ! -L "$fsldir" ]] || continue
+        [[ -f "${fsldir}/bin/flirt" || -f "${fsldir}/bin/flirt.real" ]] || continue
+        [[ -f "${fsldir}/bin/convert_xfm" || -f "${fsldir}/bin/convert_xfm.real" ]] || continue
+        for tool in flirt convert_xfm; do
+            realbin="${fsldir}/bin/${tool}.real"
+            if [[ -f "${fsldir}/bin/${tool}" ]] && [[ ! -e "$realbin" ]]; then
+                mv "${fsldir}/bin/${tool}" "$realbin"
+                cp "/opt/${tool}_wrapper.sh" "${fsldir}/bin/${tool}"
+                chmod +x "${fsldir}/bin/${tool}"
+                echo "  wrapped ${fsldir}/bin/${tool}: real binary -> ${realbin}"
+            else
+                echo "  skip ${fsldir}/bin/${tool} (missing or already wrapped: ${realbin})"
+            fi
+        done
     done
 
     # ------------------------------------------------------------------
@@ -466,7 +496,12 @@ FSLEOF
     export LC_ALL=en_US.UTF-8
     export LANG=en_US.UTF-8
 
-    # Module shim for non-interactive shells (Python subprocess)
+    # BASH_ENV lets *non-interactive bash* (`bash -c ...`, NOT bash invoked as
+    # `sh`) source the shim automatically. It does NOT deliver `module` to
+    # iProc's subprocess(shell=True) -> `/bin/sh -c` calls (bash-as-sh ignores
+    # BASH_ENV); that path relies on the exported bash function inherited from
+    # a parent bash that sourced the shim (see %runscript / %help). Kept as a
+    # convenience for interactive/`bash -c` use only.
     export BASH_ENV=/opt/module_shim.sh
 
     # Default FSL (5.0.8 or 5.0.10 mapped as iProc's baseline)

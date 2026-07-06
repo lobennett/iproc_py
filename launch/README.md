@@ -102,22 +102,37 @@ sbatch --job-name=iproc_<stage>_<subject> \
     --partition <resolved> --time <resolved> --mem <resolved> --cpus-per-task <resolved> \
     --output=<output_root>/mri_data/<subject>/logs/slurm_<stage>_%j.log \
     --error=<output_root>/mri_data/<subject>/logs/slurm_<stage>_%j.err \
-    --wrap="apptainer exec --bind <binds> <container> \
-        bash -c 'source /opt/iproc-venv/bin/activate && \
+    --wrap="apptainer exec --writable-tmpfs --bind <binds> <container> \
+        bash -c 'set -eo pipefail && \
+                 source /opt/module_shim.sh && \
+                 source /opt/iproc-venv/bin/activate && \
                  cd <code_root> && pip install -e . && \
+                 mkdir -p <output_root>/mri_data/<subject>/logs && \
                  iproc -c <output_root>/mri_data/<subject>/subject_lists/<subject>.cfg \
                      -s <stage> [--bids <bids_root>/sub-<subject>] --executor local'"
 ```
 
 This mirrors the fork's `bids_setup/run_subjects.sh`, generalized so the
 partition/time/mem/cpus/container/binds/paths all come from the profile
-instead of being hardcoded per site.
+instead of being hardcoded per site. Notable details:
+
+- **`--writable-tmpfs`** gives the read-only image a writable overlay so the
+  in-container `pip install -e .` and any tool scratch writes succeed.
+- **`set -eo pipefail`** makes the wrapped command fail fast: a non-zero exit
+  anywhere in the `&&` chain (or inside a pipe) aborts the job instead of
+  silently proceeding to `iproc`.
+- **`source /opt/module_shim.sh`** runs in the launching `bash` so that the
+  exported `module` function is inherited by iProc's
+  `subprocess(shell=True)` -> `/bin/sh -c` calls, which is how
+  `module load fsl/<version>` switches FSLDIR (see `container/module_shim.sh`).
 
 ## Known limitations / not yet wired up
 
 - `fsl.mode` and `modules` are parsed from the profile but not yet used by
   the launcher — they're placeholders for sites that need FSL output-type
   handling or `module load`-based (non-container) execution.
-- The FSL 5.0.10 hex-float `flirt`/`convert_xfm` wrapper-binary workaround
-  used by the original `run_subjects.sh` is not replicated here; sites that
-  need it should add the extra binds to their profile's `binds:` list.
+- The FSL hex-float `flirt`/`convert_xfm` workaround is **baked into the
+  image** at build time (see `container/iproc.def` §4b: every real FSL install
+  gets its real binary moved aside to `<tool>.real` and the wrapper installed
+  in its place), so there is nothing to bind at runtime and nothing for a site
+  profile to configure — it is always active for every wrapped FSL version.
