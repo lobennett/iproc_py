@@ -142,12 +142,19 @@ def translate_json(input, fname_base, numechos):
     if not nifti_basename:
         raise ValueError(f'{input} does not end with .nii or .nii.gz')
     json_name = f'{nifti_basename}.json'
-    with open(json_name) as j:
-        scan_data = json.load(j)
+    # Resolve via BIDS inheritance: the adjacent sidecar wins when present
+    # (byte-identical to reading it directly), otherwise inherited higher-level
+    # sidecars supply the metadata (e.g. MSC keeps it in root task-*_bold.json).
+    scan_data = commons.resolve_bids_metadata(input)
+    try:
         echoTime = scan_data['EchoTime']
         dwellTime = scan_data['EffectiveEchoSpacing']
         # not going to use here, but want to make sure it's in json
         phase_direction = scan_data['PhaseEncodingDirection']
+    except KeyError as e:
+        raise KeyError(
+            f'{e} missing from BIDS metadata for {input} (searched the '
+            f'adjacent sidecar and all inherited higher-level *_bold.json)')
 
     if int(numechos) == 1:
         echoTime_fname = f'{fname_base}_echoTime.sec'
@@ -165,7 +172,16 @@ def translate_json(input, fname_base, numechos):
         # rounding to be consistent with xnat_to_nii_gz_task
         f.write(f'{dwellTime:.5f}')
         logger.info(f'{dwellTime:.5f} written to {dwellTime_fname}')
-    return json_name
+
+    # JSON to preserve alongside the output: the adjacent sidecar when it
+    # exists (byte-identical to upstream), otherwise the inheritance-resolved
+    # metadata materialized to a file (cwd is a temp dir cleaned up by main).
+    if os.path.exists(json_name):
+        return json_name
+    resolved_json = os.path.join(os.getcwd(), 'resolved_bids.json')
+    with open(resolved_json, 'w') as f:
+        json.dump(scan_data, f, indent=2)
+    return resolved_json
 
 
 if __name__ == '__main__':

@@ -39,10 +39,13 @@ NEUTRAL_FROM_FORK = [
 # upstream. bids/__init__.py (match_scan_no_to_bids) makes per-session modality
 # globs conditional so a session missing a modality (e.g. cross-session anat:
 # T1 in ses-struct*, BOLD/fmap in ses-func*) no longer raises IOError;
-# behavior-preserving for same-session datasets. See NOTICE.md /
-# docs/fork-audit.md.
+# behavior-preserving for same-session datasets. commons/__init__.py adds a
+# BIDS inheritance resolver (resolve_bids_metadata) and runscript/func_from_bids.py
+# uses it to read echo/dwell metadata from inherited higher-level sidecars when
+# no per-run sidecar exists (e.g. MSC); byte-identical to upstream when the
+# adjacent sidecar is present. See NOTICE.md / docs/fork-audit.md.
 OURS = {"cli/iproc.py", "steps.py", "runscript/fmap_from_bids.py",
-        "bids/__init__.py"}
+        "bids/__init__.py", "commons/__init__.py", "runscript/func_from_bids.py"}
 
 def _iter_upstream_core():
     for f in (UP / "iproc").rglob("*"):

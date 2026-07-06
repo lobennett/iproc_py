@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import shutil
 import shlex
@@ -257,6 +258,86 @@ def get_json_entity(json_fname,entity_name):
             logger.error('Make sure {} field is populated for file {}'.format(entity_name,json_fname))
             raise
     return entity_value
+
+
+def _bids_name_parts(fname):
+    """Return (entities dict, suffix) parsed from a BIDS filename.
+
+    e.g. 'sub-01_ses-a_task-rest_run-02_bold.nii.gz' ->
+         ({'sub':'01','ses':'a','task':'rest','run':'02'}, 'bold')
+    A .json sidecar parses the same way (suffix is the last token, extension
+    stripped). Tokens without a '-' (the trailing suffix) become the suffix.
+    """
+    base = re.sub(r'\.(nii\.gz|nii|json)$', '', os.path.basename(fname))
+    entities = {}
+    suffix = None
+    for tok in base.split('_'):
+        if '-' in tok:
+            k, v = tok.split('-', 1)
+            entities[k] = v
+        else:
+            suffix = tok  # last bare token wins
+    return entities, suffix
+
+
+def resolve_bids_metadata(data_path):
+    """Resolve a BIDS data file's sidecar metadata, honoring the BIDS
+    *inheritance principle*.
+
+    Returns a dict merged from every applicable JSON sidecar between the
+    dataset root and the data file's own directory. A sidecar applies when
+    every entity in its filename is present with a matching value in the data
+    file's name and its suffix matches. Shallower/less-specific sidecars are
+    merged first and overridden by deeper/more-specific ones, so the data
+    file's own sibling sidecar (if present) wins — making this byte-identical
+    to reading the sibling directly for datasets that carry per-run sidecars,
+    while also resolving datasets that keep metadata only in inherited,
+    higher-level sidecars (e.g. MSC and many OpenNeuro trees).
+    """
+    data_path = os.path.abspath(data_path)
+    tgt_entities, tgt_suffix = _bids_name_parts(data_path)
+
+    # directories from the file's own dir up toward the root; stop at (and
+    # include) the dataset root (the dir holding dataset_description.json).
+    dirs = []
+    d = os.path.dirname(data_path)
+    while True:
+        dirs.append(d)
+        if os.path.exists(os.path.join(d, 'dataset_description.json')):
+            break
+        parent = os.path.dirname(d)
+        if parent == d:  # filesystem root; no dataset_description.json found
+            break
+        d = parent
+
+    # collect applicable sidecars with a specificity score, then merge
+    # shallow->deep, less-specific->more-specific (higher score overrides).
+    applicable = []  # (depth, n_entities, path)
+    for depth, dpath in enumerate(reversed(dirs)):  # shallow first
+        try:
+            names = sorted(os.listdir(dpath))
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith('.json'):
+                continue
+            cand = os.path.join(dpath, name)
+            c_entities, c_suffix = _bids_name_parts(cand)
+            if c_suffix != tgt_suffix:
+                continue
+            if any(tgt_entities.get(k) != v for k, v in c_entities.items()):
+                continue
+            applicable.append((depth, len(c_entities), cand))
+
+    applicable.sort(key=lambda t: (t[0], t[1]))
+    merged = {}
+    for _, _, cand in applicable:
+        try:
+            with open(cand) as f:
+                merged.update(json.load(f))
+        except (OSError, ValueError) as e:
+            logger.warning('could not read JSON sidecar %s: %s', cand, e)
+    return merged
 
 class ScriptBuilder():
     #This allows for more flexible creation of sbatch scripts for 
