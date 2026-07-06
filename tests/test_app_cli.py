@@ -8,13 +8,14 @@ real pipeline stage (they stay FSL-free).
 from __future__ import annotations
 
 import json
+from importlib import metadata
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from iproc.app import cli
 from iproc.app import config
-from iproc.__version__ import __version__ as IPROC_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -110,9 +111,23 @@ def test_build_parser_positionals_and_choices():
     assert args2.analysis_level == "group"
 
 
-def test_version_prints_iproc_version(capsys):
+def test_version_prints_installed_distribution_version(capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert metadata.version("iproc") in out
+
+
+def test_version_falls_back_to_vendored_version_when_dist_not_found(capsys):
+    from iproc.__version__ import __version__ as IPROC_VERSION
+
+    with patch(
+        "iproc.app.cli.metadata.version",
+        side_effect=metadata.PackageNotFoundError,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["--version"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert IPROC_VERSION in out
@@ -244,3 +259,33 @@ def test_participant_run_generates_configs_and_prints_guidance(complete_bids, tm
     assert "setup" in printed
     assert "filter_and_project" in printed
     assert "qc" in printed.lower()
+
+
+# ---------------------------------------------------------------------------
+# Real (non-dry) participant run WITH --stage: live engine invocation, mocked
+# ---------------------------------------------------------------------------
+
+
+def test_live_stage_run_invokes_iproc_engine_once_per_participant(complete_bids, tmp_path):
+    """``--stage`` without ``--dry-run`` subprocess-invokes the ``iproc`` engine.
+
+    Mocks ``subprocess.run`` so this stays FSL-free while still covering the
+    live stage-invocation branch (``_run_participant``'s step 3), asserting
+    the exact command built by ``_stage_command`` is run once per participant.
+    """
+    out = tmp_path / "out"
+    with patch("iproc.app.cli.subprocess.run") as mock_run:
+        rc = cli.main(
+            [str(complete_bids), str(out), "participant", "--stage", "setup"]
+        )
+    assert rc == 0
+
+    expected_cfg = out / "mri_data" / "01" / "subject_lists" / "01.cfg"
+    expected_cmd = [
+        "iproc",
+        "-c", str(expected_cfg),
+        "-s", "setup",
+        "--bids", str(complete_bids / "sub-01"),
+        "--executor", "local",
+    ]
+    mock_run.assert_called_once_with(expected_cmd, check=True)

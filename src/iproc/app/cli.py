@@ -32,11 +32,26 @@ import argparse
 import subprocess
 import sys
 from argparse import Namespace
+from importlib import metadata
 from pathlib import Path
 
 from iproc.app import config
 from iproc.bids_app import discover, generate
 from iproc.__version__ import __version__ as IPROC_VERSION
+
+
+def _dist_version() -> str:
+    """The installed ``iproc`` distribution version.
+
+    Falls back to the vendored ``iproc.__version__`` (e.g. ``v1.1.1``) only
+    when the package metadata isn't available, such as running from a raw
+    checkout that was never ``pip install``-ed.
+    """
+    try:
+        return metadata.version("iproc")
+    except metadata.PackageNotFoundError:
+        return IPROC_VERSION
+
 
 # The six iProc pipeline stages, in run order. Kept in lockstep with
 # ``iproc.cli.iproc.phraseList`` but hardcoded here so building the parser does
@@ -97,11 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan (participants + commands) without "
                              "writing outputs or running any stage.")
-    parser.add_argument("--strict-config", action="store_true",
-                        help="Fail on missing required config fields instead of "
-                             "proceeding with defaults.")
     parser.add_argument("--version", action="version",
-                        version=f"iproc {IPROC_VERSION}")
+                        version=f"iproc {_dist_version()}")
 
     # Discovery parameters (mirror bids_discover defaults).
     parser.add_argument("--skip", type=int, default=_DEFAULT_SKIP,
@@ -178,8 +190,13 @@ def resolve_participants(
 def populate_config(args: Namespace, participants: list[str]) -> None:
     """Populate the T6 config singleton from parsed args (reassign, don't mutate).
 
-    With ``--strict-config`` set, refuse to proceed if any required execution
-    field is missing (no bids_dir/output_dir, or no resolved participants).
+    ``bids_dir``/``output_dir`` are required positional ``Path`` args (never
+    ``None`` by the time we get here) and ``main`` already calls
+    ``parser.error`` if no participants resolve, so there is nothing left to
+    strictly validate from known argparse args alone. Strict config-file
+    validation belongs here once ``iproc-app`` gains config-file or
+    ``--bids-filter-file`` ingestion (arbitrary user-supplied keys that
+    argparse can't already guarantee) — reintroduce it then.
     """
     config.execution.bids_dir = args.bids_dir.resolve()
     config.execution.output_dir = args.output_dir.resolve()
@@ -194,20 +211,6 @@ def populate_config(args: Namespace, participants: list[str]) -> None:
     config.workflow.resolution = str(args.resolution)
     config.workflow.skip = args.skip
     config.workflow.smoothing = args.smoothing
-
-    if args.strict_config:
-        problems = []
-        if config.execution.bids_dir is None:
-            problems.append("bids_dir is unset")
-        if config.execution.output_dir is None:
-            problems.append("output_dir is unset")
-        if not config.execution.participant_label:
-            problems.append("no participants resolved")
-        if problems:
-            raise SystemExit(
-                "strict-config: refusing to run with incomplete config — "
-                + "; ".join(problems)
-            )
 
 
 # ---------------------------------------------------------------------------
