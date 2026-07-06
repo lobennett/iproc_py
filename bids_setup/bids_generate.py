@@ -404,6 +404,19 @@ def generate_subject_config(
 # Main generation
 # ---------------------------------------------------------------------------
 
+def subject_fieldmap_regimes(sub_data: dict) -> set[str]:
+    """Distinct usable fieldmap regimes across a subject's sessions.
+
+    Only counts sessions that actually have the files for their regime, so a
+    fmap-less session does not contribute a spurious 'none'.
+    """
+    regimes = set()
+    for ses_data in sub_data["sessions"].values():
+        if session_has_fieldmap(ses_data):
+            regimes.add(session_fieldmap_type(ses_data))
+    return regimes
+
+
 def generate_all(
     manifest: dict,
     iproc_dir: Path,
@@ -413,6 +426,7 @@ def generate_all(
     manufacturer: str | None = None,
     force: bool = False,
     allow_no_fieldmap: bool = False,
+    allow_missing_anat: bool = False,
 ) -> None:
     """Generate all iProc config files from the manifest."""
     iproc_dir = iproc_dir.resolve()
@@ -435,6 +449,60 @@ def generate_all(
                   "--force to proceed anyway.")
         sys.exit(2)
 
+    # 1b. Refuse missing anatomy (no selected T1 or no midvol target) rather
+    #     than silently emitting T1_SESS=UNKNOWN / MIDVOL_SESS=UNKNOWN, which
+    #     produces a config that fails opaquely deep in iProc.
+    missing_anat = []
+    for name, sd in sorted(manifest["subjects"].items()):
+        reasons = []
+        if sd.get("t1_selection") is None:
+            reasons.append("no T1w selected")
+        if sd.get("midvol") is None:
+            reasons.append("no midvol/BOLD target")
+        if reasons:
+            missing_anat.append((name, ", ".join(reasons)))
+    if missing_anat and not allow_missing_anat:
+        log.error("Missing anatomy for subject(s):")
+        for name, reason in missing_anat:
+            log.error("  sub-%s: %s", name, reason)
+        log.error("Fix the manifest (t1_selection / midvol), or re-run with "
+                  "--allow-missing-anat to proceed anyway.")
+        sys.exit(4)
+
+    # 1c. Refuse mixed fieldmap regimes within a subject. The cfg carries a
+    #     single global PREPTOOL, so a subject whose sessions mix e.g. phasediff
+    #     and topup cannot be expressed correctly. Block unless --force.
+    mixed = []
+    for name, sd in sorted(manifest["subjects"].items()):
+        regimes = subject_fieldmap_regimes(sd)
+        if len(regimes) > 1:
+            mixed.append((name, sorted(regimes)))
+    if mixed and not force:
+        log.error("Mixed fieldmap regimes within subject(s) "
+                  "(cfg has a single PREPTOOL):")
+        for name, regimes in mixed:
+            log.error("  sub-%s: %s", name, ", ".join(regimes))
+        log.error("Split the subject or standardise the fieldmaps, or re-run "
+                  "with --force to proceed anyway.")
+        sys.exit(5)
+
+    # 1d. Refuse the 'direct' fieldmap regime outright: iProc has no 'direct'
+    #     preptool, so PREPTOOL=direct would be an invalid config. --force does
+    #     not override this because there is no valid downstream path.
+    direct_subs = sorted(
+        name for name, sd in manifest["subjects"].items()
+        if sd.get("fieldmap_type") == "direct"
+        or "direct" in subject_fieldmap_regimes(sd)
+    )
+    if direct_subs:
+        log.error(
+            "Unsupported 'direct' fieldmap regime for subject(s): %s",
+            ", ".join(direct_subs),
+        )
+        log.error("iProc has no 'direct' preptool (only fsl_prepare_fieldmap / "
+                  "topup). Convert the fieldmap or exclude these sessions.")
+        sys.exit(6)
+
     # 2. Refuse to silently deselect BOLD runs when their OWN session has no
     #    usable fieldmap. This is per session (per BOLD run), NOT the subject-
     #    wide rollup: a subject where one session has a fieldmap but another
@@ -454,6 +522,16 @@ def generate_all(
         log.error("Re-run with --allow-no-fieldmap to deselect these runs "
                   "(they will be written with Analyze=0).")
         sys.exit(3)
+
+    # 3. Warn loudly for any task missing a RepetitionTime, rather than writing
+    #    a blank TR into tasktype_consolidated.csv where it would be missed.
+    for task_name, params in sorted(manifest["tasks"].items()):
+        if not params.get("tr"):
+            log.warning(
+                "Task '%s' has no RepetitionTime — TR will be BLANK in "
+                "tasktype_consolidated.csv. Set it in the manifest before "
+                "running iProc.", task_name,
+            )
 
     # 1. tasktype_consolidated.csv
     log.info("=== Generating tasktype_consolidated.csv ===")
@@ -540,6 +618,10 @@ def main():
                         help="Deselect (Analyze=0) BOLD runs whose own session has "
                              "no usable fieldmap, emitting a per-run warning, "
                              "instead of erroring out")
+    parser.add_argument("--allow-missing-anat", action="store_true",
+                        help="Proceed even if a subject has no selected T1w or no "
+                             "midvol/BOLD target (otherwise blocks instead of "
+                             "emitting T1_SESS=UNKNOWN)")
 
     args = parser.parse_args()
 
@@ -561,6 +643,7 @@ def main():
         manufacturer=args.manufacturer,
         force=args.force,
         allow_no_fieldmap=args.allow_no_fieldmap,
+        allow_missing_anat=args.allow_missing_anat,
     )
 
 

@@ -3,6 +3,7 @@
 # dependencies = [
 #     "nibabel>=5.0",
 #     "pyyaml>=5.0",
+#     "pybids<0.19",
 # ]
 # ///
 """
@@ -19,12 +20,16 @@ Usage:
 
 The manifest is the checkpoint between discovery and generation.
 Review it, edit T1 selections or exclude sessions, then pass to bids_generate.py.
+
+File discovery uses pybids' BIDSLayout so that BIDS entities we do not model
+explicitly (acq-, dir-, part-, rec-, ce-, ...) and uncompressed .nii files are
+found and grouped correctly, instead of being silently dropped by hand-rolled
+filename regexes.
 """
 from __future__ import annotations
 
 import argparse
 import fnmatch
-import json
 import logging
 import re
 import sys
@@ -35,10 +40,15 @@ from typing import Any
 import nibabel as nib
 import yaml
 
+from bids import BIDSLayout
+
 from iproc.fieldmap import detect_regime
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
+
+# NIfTI extensions we accept everywhere (both compressed and uncompressed).
+NII_EXT = [".nii", ".nii.gz"]
 
 # Map fieldmap regime preptool -> iProc PREPTOOL / manifest fieldmap_type.
 # detect_regime already reports evidence["preptool"] in iProc's vocabulary
@@ -46,61 +56,27 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# BIDS filename parsing
+# Ordering helpers
 # ---------------------------------------------------------------------------
 
-# `_ses-` is optional so no-session BIDS layouts (sub-XX/func/...) parse too.
-BOLD_RE = re.compile(
-    r"sub-(?P<sub>[^_]+)"
-    r"(?:_ses-(?P<ses>[^_]+))?"
-    r"_task-(?P<task>[^_]+)"
-    r"(?:_run-(?P<run>\d+))?"
-    r"(?:_echo-(?P<echo>\d+))?"
-    r"_bold\.nii\.gz$"
-)
+def _num_key(value: Any):
+    """Sort key that orders numeric-looking labels numerically, others lexically.
 
-FMAP_MAG_RE = re.compile(
-    r"sub-(?P<sub>[^_]+)"
-    r"(?:_ses-(?P<ses>[^_]+))?"
-    r"(?:_run-(?P<run>\d+))?"
-    r"_magnitude(?P<idx>[12])?\.nii\.gz$"
-)
-
-FMAP_PHASE_RE = re.compile(
-    r"sub-(?P<sub>[^_]+)"
-    r"(?:_ses-(?P<ses>[^_]+))?"
-    r"(?:_run-(?P<run>\d+))?"
-    r"_(?:fieldmap|phasediff|phase(?P<idx>[12]))\.nii\.gz$"
-)
-
-# Opposite-phase-encoded spin-echo EPI fieldmaps (pepolar / topup).
-FMAP_EPI_RE = re.compile(
-    r"sub-(?P<sub>[^_]+)"
-    r"(?:_ses-(?P<ses>[^_]+))?"
-    r"(?:_acq-(?P<acq>[^_]+))?"
-    r"_dir-(?P<dir>[^_]+)"
-    r"(?:_run-(?P<run>\d+))?"
-    r"_epi\.nii\.gz$"
-)
-
-ANAT_RE = re.compile(
-    r"sub-(?P<sub>[^_]+)"
-    r"(?:_ses-(?P<ses>[^_]+))?"
-    r"(?:_acq-(?P<acq>[^_]+))?"
-    r"(?:_run-(?P<run>\d+))?"
-    r"_T1w\.nii\.gz$"
-)
+    Ensures run-10 sorts after run-2 and ses-10 after ses-2 instead of lexically.
+    Numeric labels sort before non-numeric ones; both groups are stable.
+    """
+    if value is None:
+        return (0, 0.0, "")
+    s = str(value)
+    m = re.fullmatch(r"0*(\d+)", s)
+    if m:
+        return (0, float(m.group(1)), "")
+    return (1, 0.0, s)
 
 
-def read_json(nii_path: Path) -> dict:
-    """Read the JSON sidecar for a NIfTI file."""
-    name = nii_path.name.replace(".nii.gz", ".json")
-    json_path = nii_path.parent / name
-    if not json_path.exists():
-        return {}
-    with open(json_path) as f:
-        return json.load(f)
-
+# ---------------------------------------------------------------------------
+# NIfTI header inspection
+# ---------------------------------------------------------------------------
 
 def get_nvols(nii_path: Path) -> int:
     """Get number of volumes from NIfTI header without loading data."""
@@ -111,21 +87,6 @@ def get_nvols(nii_path: Path) -> int:
     except Exception as e:
         log.warning("Could not read %s: %s", nii_path.name, e)
         return 0
-
-
-def get_descrip_te(nii_path: Path) -> float | None:
-    """Extract TE from NIfTI descrip field (e.g. 'te=9.10;...')."""
-    try:
-        img = nib.load(str(nii_path))
-        descrip = img.header["descrip"].item()
-        if isinstance(descrip, bytes):
-            descrip = descrip.decode("utf-8", errors="ignore")
-        m = re.search(r"te=([0-9.]+)", descrip, re.IGNORECASE)
-        if m:
-            return float(m.group(1)) / 1000.0  # ms → seconds
-    except Exception:
-        pass
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -153,35 +114,61 @@ def is_bidsignored(relative_path: str, patterns: list[str]) -> bool:
 # Discovery
 # ---------------------------------------------------------------------------
 
+def _fmap_dir_for(bids_root: Path, sub_label: str, ses_query: str | None) -> Path:
+    """Filesystem path to the fmap/ directory (for regime detection)."""
+    base = bids_root / f"sub-{sub_label}"
+    if ses_query is not None:
+        base = base / f"ses-{ses_query}"
+    return base / "fmap"
+
+
 def discover_subject(
+    layout: BIDSLayout,
     bids_root: Path,
-    sub_dir: Path,
+    sub_label: str,
     skip: int,
     smoothing: float,
     echo_time_diff: float,
+    bidsignore: list[str],
 ) -> dict:
-    """Discover all sessions, tasks, fieldmaps, and anatomicals for one subject."""
-    sub_id = sub_dir.name
-    sub_label = sub_id.replace("sub-", "")
+    """Discover all sessions, tasks, fieldmaps, and anatomicals for one subject.
 
-    bidsignore = load_bidsignore_patterns(bids_root)
+    File discovery is delegated to pybids' BIDSLayout so entities we do not model
+    (acq-, dir-, part-, rec-, ce-, ...) and uncompressed .nii files are found and
+    grouped correctly instead of being silently dropped.
+    """
+    sub_id = f"sub-{sub_label}"
 
     sessions: dict[str, dict] = {}
     task_params: dict[str, dict] = {}
 
-    # Discover sessions. Fall back to a no-`ses-` layout: if the subject dir has
-    # no ses-* subdirectories, treat the subject dir itself as a single session
-    # whose id is the subject label.
-    ses_dirs = [
-        d for d in sorted(sub_dir.iterdir())
-        if d.is_dir() and d.name.startswith("ses-")
-    ]
-    if ses_dirs:
-        session_items = [(d.name.replace("ses-", ""), d) for d in ses_dirs]
-    else:
-        session_items = [(sub_label, sub_dir)]
+    def _keep(fpath: str) -> bool:
+        """Honour .bidsignore against the BIDS-relative path."""
+        try:
+            rel = str(Path(fpath).relative_to(bids_root))
+        except ValueError:
+            rel = fpath
+        if is_bidsignored(rel, bidsignore):
+            log.debug("Skipping .bidsignored file: %s", rel)
+            return False
+        return True
 
-    for ses_label, ses_dir in session_items:
+    def _rel(fpath: str) -> str:
+        try:
+            return str(Path(fpath).relative_to(bids_root))
+        except ValueError:
+            return fpath
+
+    # Discover sessions via pybids. Fall back to a no-`ses-` layout: if the
+    # subject has no sessions, treat the subject as a single session whose id is
+    # the subject label (query with session=None to match the flat layout).
+    ses_ids = sorted(layout.get_sessions(subject=sub_label), key=_num_key)
+    if ses_ids:
+        session_items = [(s, s) for s in ses_ids]  # (ses_label, ses_query)
+    else:
+        session_items = [(sub_label, None)]
+
+    for ses_label, ses_query in session_items:
         ses_data: dict[str, Any] = {
             "anat": [],
             "bold": [],
@@ -199,7 +186,7 @@ def discover_subject(
         sn_counter = 4  # start after fmap slots
 
         # --- Fieldmaps ---
-        fmap_dir = ses_dir / "fmap"
+        fmap_dir = _fmap_dir_for(bids_root, sub_label, ses_query)
 
         # Regime-aware detection (phasediff / pepolar / direct / none) via the
         # shared iproc.fieldmap module. Emits warnings to stderr for every
@@ -221,159 +208,158 @@ def discover_subject(
 
         # Synthetic series numbers for pepolar AP/PA EPIs when JSON lacks them.
         epi_sn = 20
-        if fmap_dir.is_dir():
-            for f in sorted(fmap_dir.glob("*.nii.gz")):
-                if is_bidsignored(str(f.relative_to(bids_root)), bidsignore):
-                    log.debug("Skipping .bidsignored fmap: %s", f.name)
-                    continue
-                mag_m = FMAP_MAG_RE.match(f.name)
-                phase_m = FMAP_PHASE_RE.match(f.name)
-                epi_m = FMAP_EPI_RE.match(f.name)
+        fmap_files = layout.get(
+            subject=sub_label, session=ses_query, datatype="fmap",
+            extension=NII_EXT, return_type="file",
+        )
+        for f in sorted(fmap_files):
+            if not _keep(f):
+                continue
+            ent = layout.parse_file_entities(f)
+            suffix = ent.get("suffix", "")
+            meta = layout.get_metadata(f)
+            run = int(ent["run"]) if ent.get("run") is not None else 1
 
-                if epi_m:
-                    js = read_json(f)
-                    sn = js.get("SeriesNumber", epi_sn)
-                    epi_sn += 1
-                    pe = js.get("PhaseEncodingDirection", "")
-                    direction = (epi_m.group("dir") or "").upper()
-                    entry = {
-                        "file": str(f.relative_to(bids_root)),
-                        "run": int(epi_m.group("run") or 1),
-                        "series_number": sn,
-                        "phase_encoding_direction": pe,
-                        "dir": direction,
-                    }
-                    # Classify AP vs PA: prefer the BIDS `dir-` entity, fall
-                    # back to PhaseEncodingDirection (j == PA, j- == AP).
-                    if direction == "AP" or (not direction and pe.endswith("-")):
-                        ses_data["fmap_ap"].append(entry)
-                    elif direction == "PA" or (not direction and pe and not pe.endswith("-")):
-                        ses_data["fmap_pa"].append(entry)
-                    else:
-                        # Unknown direction — keep as AP so it is not silently dropped.
-                        ses_data["fmap_ap"].append(entry)
-                    continue
+            if suffix == "epi":
+                sn = meta.get("SeriesNumber", epi_sn)
+                epi_sn += 1
+                pe = meta.get("PhaseEncodingDirection", "")
+                direction = str(ent.get("direction") or "").upper()
+                entry = {
+                    "file": _rel(f),
+                    "run": run,
+                    "series_number": sn,
+                    "phase_encoding_direction": pe,
+                    "dir": direction,
+                }
+                # Classify AP vs PA: prefer the BIDS `dir-` entity, fall back to
+                # PhaseEncodingDirection (j == PA, j- == AP).
+                if direction == "AP" or (not direction and pe.endswith("-")):
+                    ses_data["fmap_ap"].append(entry)
+                elif direction == "PA" or (not direction and pe and not pe.endswith("-")):
+                    ses_data["fmap_pa"].append(entry)
+                else:
+                    # Unknown direction — keep as AP so it is not silently dropped.
+                    ses_data["fmap_ap"].append(entry)
 
-                if mag_m:
-                    js = read_json(f)
-                    sn = js.get("SeriesNumber", 2)
-                    ses_data["fmap_mag"].append({
-                        "file": str(f.relative_to(bids_root)),
-                        "run": int(mag_m.group("run") or 1),
-                        "series_number": sn,
-                    })
-                elif phase_m:
-                    js = read_json(f)
-                    sn = js.get("SeriesNumber", 3)
-                    te_diff = js.get("EchoTimeDifference", echo_time_diff)
-                    ses_data["fmap_phase"].append({
-                        "file": str(f.relative_to(bids_root)),
-                        "run": int(phase_m.group("run") or 1),
-                        "series_number": sn,
-                        "echo_time_diff": te_diff,
-                    })
-
-            # Ensure mag and phase SeriesNumbers are consistent
-            # (phase must be mag+1 for iProc's fsl_prepare_fieldmap constraint)
-            if ses_data["fmap_mag"] and ses_data["fmap_phase"]:
-                mag_sn = ses_data["fmap_mag"][0]["series_number"]
-                phase_sn = ses_data["fmap_phase"][0]["series_number"]
-                if phase_sn - mag_sn not in (1, 2):
-                    ses_data["fmap_mag"][0]["series_number"] = 2
-                    ses_data["fmap_phase"][0]["series_number"] = 3
-
-        # --- Anatomicals ---
-        anat_dir = ses_dir / "anat"
-        if anat_dir.is_dir():
-            for f in sorted(anat_dir.glob("*.nii.gz")):
-                if is_bidsignored(str(f.relative_to(bids_root)), bidsignore):
-                    log.debug("Skipping .bidsignored anat: %s", f.name)
-                    continue
-                m = ANAT_RE.match(f.name)
-                if not m:
-                    continue
-                js = read_json(f)
-                run = int(m.group("run") or 1)
-                sn = js.get("SeriesNumber", 50 + run)
-                ses_data["anat"].append({
-                    "file": str(f.relative_to(bids_root)),
+            elif suffix in ("magnitude", "magnitude1", "magnitude2"):
+                sn = meta.get("SeriesNumber", 2)
+                ses_data["fmap_mag"].append({
+                    "file": _rel(f),
                     "run": run,
                     "series_number": sn,
                 })
 
-        # --- Functional ---
-        func_dir = ses_dir / "func"
-        if func_dir.is_dir():
-            task_run_echoes: dict[str, list] = defaultdict(list)
-
-            for f in sorted(func_dir.glob("*_bold.nii.gz")):
-                if is_bidsignored(str(f.relative_to(bids_root)), bidsignore):
-                    log.debug("Skipping .bidsignored BOLD: %s", f.name)
-                    continue
-                m = BOLD_RE.match(f.name)
-                if not m:
-                    continue
-
-                task = m.group("task")
-                run = int(m.group("run") or 1)
-                echo = int(m.group("echo") or 1)
-                key = f"{task}_run-{run}"
-
-                task_run_echoes[key].append({
-                    "file": str(f.relative_to(bids_root)),
-                    "task": task,
+            elif suffix in ("phasediff", "phase1", "phase2", "fieldmap"):
+                sn = meta.get("SeriesNumber", 3)
+                te_diff = meta.get("EchoTimeDifference", echo_time_diff)
+                ses_data["fmap_phase"].append({
+                    "file": _rel(f),
                     "run": run,
-                    "echo": echo,
-                    "nii_path": f,
+                    "series_number": sn,
+                    "echo_time_diff": te_diff,
                 })
 
-            for key, echoes in sorted(task_run_echoes.items()):
-                first = echoes[0]
-                task = first["task"]
-                run = first["run"]
-                nii_path = first["nii_path"]
+        # Ensure mag and phase SeriesNumbers are consistent
+        # (phase must be mag+1 for iProc's fsl_prepare_fieldmap constraint)
+        if ses_data["fmap_mag"] and ses_data["fmap_phase"]:
+            mag_sn = ses_data["fmap_mag"][0]["series_number"]
+            phase_sn = ses_data["fmap_phase"][0]["series_number"]
+            if phase_sn - mag_sn not in (1, 2):
+                ses_data["fmap_mag"][0]["series_number"] = 2
+                ses_data["fmap_phase"][0]["series_number"] = 3
 
-                js = read_json(nii_path)
-                nvols_total = get_nvols(nii_path)
-                nvols = max(0, nvols_total - skip)
-                nechos = len(echoes)
+        # --- Anatomicals ---
+        anat_files = layout.get(
+            subject=sub_label, session=ses_query, suffix="T1w",
+            extension=NII_EXT, return_type="file",
+        )
+        for f in sorted(anat_files):
+            if not _keep(f):
+                continue
+            ent = layout.parse_file_entities(f)
+            meta = layout.get_metadata(f)
+            run = int(ent["run"]) if ent.get("run") is not None else 1
+            sn = meta.get("SeriesNumber", 50 + run)
+            ses_data["anat"].append({
+                "file": _rel(f),
+                "run": run,
+                "series_number": sn,
+            })
 
-                series_number = js.get("SeriesNumber", sn_counter)
-                sn_counter = max(sn_counter, series_number) + 1
-                tr = js.get("RepetitionTime", 0)
-                echo_time = js.get("EchoTime", 0)
-                eff_echo_spacing = js.get("EffectiveEchoSpacing", 0)
-                phase_dir = js.get("PhaseEncodingDirection", "")
+        # --- Functional ---
+        bold_files = layout.get(
+            subject=sub_label, session=ses_query, suffix="bold",
+            extension=NII_EXT, return_type="file",
+        )
+        # Group multi-echo acquisitions by (task, run); collect their echoes.
+        task_run_echoes: dict[tuple[str, int], list] = defaultdict(list)
+        for f in sorted(bold_files):
+            if not _keep(f):
+                continue
+            ent = layout.parse_file_entities(f)
+            task = ent.get("task")
+            if task is None:
+                continue
+            run = int(ent["run"]) if ent.get("run") is not None else 1
+            echo = int(ent["echo"]) if ent.get("echo") is not None else 1
+            task_run_echoes[(task, run)].append({
+                "file": _rel(f),
+                "task": task,
+                "run": run,
+                "echo": echo,
+                "nii_path": Path(f),
+            })
 
-                ses_data["bold"].append({
-                    "task": task,
-                    "run": run,
-                    "series_number": series_number,
-                    "num_volumes_total": nvols_total,
+        # Numeric ordering: (task, run) with run-10 after run-2.
+        for (task, run), echoes in sorted(
+            task_run_echoes.items(), key=lambda kv: (kv[0][0], _num_key(kv[0][1]))
+        ):
+            echoes = sorted(echoes, key=lambda e: e["echo"])
+            first = echoes[0]
+            nii_path = first["nii_path"]
+
+            meta = layout.get_metadata(str(nii_path))
+            nvols_total = get_nvols(nii_path)
+            nvols = max(0, nvols_total - skip)
+            nechos = len(echoes)
+
+            series_number = meta.get("SeriesNumber", sn_counter)
+            sn_counter = max(sn_counter, series_number) + 1
+            tr = meta.get("RepetitionTime", 0)
+            echo_time = meta.get("EchoTime", 0)
+            eff_echo_spacing = meta.get("EffectiveEchoSpacing", 0)
+            phase_dir = meta.get("PhaseEncodingDirection", "")
+
+            ses_data["bold"].append({
+                "task": task,
+                "run": run,
+                "series_number": series_number,
+                "num_volumes_total": nvols_total,
+                "num_volumes": nvols,
+                "num_echos": nechos,
+                "tr": round(tr, 4) if tr else None,
+                "echo_time": round(echo_time, 6) if echo_time else None,
+                "effective_echo_spacing": round(eff_echo_spacing, 8) if eff_echo_spacing else None,
+                "phase_encoding_direction": phase_dir,
+            })
+
+            task_upper = task.upper()
+            if task_upper not in task_params:
+                task_params[task_upper] = {
+                    "task_bids_name": task,
+                    "tr": round(tr, 4) if tr else None,
+                    "skip": skip,
+                    "smoothing": smoothing,
                     "num_volumes": nvols,
                     "num_echos": nechos,
-                    "tr": round(tr, 4) if tr else None,
-                    "echo_time": round(echo_time, 6) if echo_time else None,
-                    "effective_echo_spacing": round(eff_echo_spacing, 8) if eff_echo_spacing else None,
-                    "phase_encoding_direction": phase_dir,
-                })
-
-                task_upper = task.upper()
-                if task_upper not in task_params:
-                    task_params[task_upper] = {
-                        "task_bids_name": task,
-                        "tr": round(tr, 4) if tr else None,
-                        "skip": skip,
-                        "smoothing": smoothing,
-                        "num_volumes": nvols,
-                        "num_echos": nechos,
-                    }
+                }
 
         sessions[ses_label] = ses_data
 
     # --- T1 selection: pick the LATEST session with a T1w ---
     t1_selection = None
-    for ses_label in sorted(sessions.keys(), reverse=True):
+    for ses_label in sorted(sessions.keys(), key=_num_key, reverse=True):
         anats = sessions[ses_label]["anat"]
         if anats:
             best = sorted(anats, key=lambda a: a["run"])[-1]
@@ -390,7 +376,7 @@ def discover_subject(
 
     # --- MIDVOL target: first session, first BOLD run ---
     midvol = None
-    for ses_label in sorted(sessions.keys()):
+    for ses_label in sorted(sessions.keys(), key=_num_key):
         bolds = sessions[ses_label]["bold"]
         if bolds:
             first_bold = bolds[0]
@@ -414,7 +400,7 @@ def discover_subject(
     detections = []
     fmap_type = None
     confidence = "high"
-    for ses_label in sorted(sessions.keys()):
+    for ses_label in sorted(sessions.keys(), key=_num_key):
         det = sessions[ses_label].get("detection")
         if not det:
             continue
@@ -462,26 +448,35 @@ def discover_dataset(
         log.error("BIDS root does not exist: %s", bids_root)
         sys.exit(1)
 
-    sub_dirs = sorted(
-        d for d in bids_root.iterdir()
-        if d.is_dir() and d.name.startswith("sub-")
-    )
+    bidsignore = load_bidsignore_patterns(bids_root)
+
+    # Index the dataset once with pybids. validate=False so partially-BIDS or
+    # in-progress datasets still index; discovery is tolerant by design.
+    layout = BIDSLayout(str(bids_root), validate=False)
+
+    all_labels = sorted(layout.get_subjects(), key=_num_key)
 
     if subjects:
-        sub_dirs = [d for d in sub_dirs if d.name in subjects or d.name.replace("sub-", "") in subjects]
+        # Accept both "sub-01" and "01" forms in --subjects.
+        wanted = {s.replace("sub-", "") for s in subjects}
+        sub_labels = [lbl for lbl in all_labels if lbl in wanted]
+    else:
+        sub_labels = all_labels
 
-    if not sub_dirs:
+    if not sub_labels:
         log.error("No subjects found in %s", bids_root)
         sys.exit(1)
 
-    log.info("Found %d subject(s) in %s", len(sub_dirs), bids_root)
+    log.info("Found %d subject(s) in %s", len(sub_labels), bids_root)
 
     all_subjects = {}
     all_tasks: dict[str, dict] = {}
 
-    for sub_dir in sub_dirs:
-        log.info("Discovering %s ...", sub_dir.name)
-        sub_data = discover_subject(bids_root, sub_dir, skip, smoothing, echo_time_diff)
+    for sub_label in sub_labels:
+        log.info("Discovering sub-%s ...", sub_label)
+        sub_data = discover_subject(
+            layout, bids_root, sub_label, skip, smoothing, echo_time_diff, bidsignore,
+        )
         # Key by subject label (e.g. "01"), not the "sub-01" directory name, so
         # the manifest matches iProc's SUBJID convention.
         all_subjects[sub_data["sub_label"]] = sub_data
