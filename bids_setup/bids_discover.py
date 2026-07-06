@@ -56,6 +56,46 @@ NII_EXT = [".nii", ".nii.gz"]
 
 
 # ---------------------------------------------------------------------------
+# Type coercion (pybids -> plain Python / YAML-safe types)
+# ---------------------------------------------------------------------------
+
+def _plain(v: Any) -> Any:
+    """Recursively coerce pybids-flavored values into plain Python builtins.
+
+    pybids returns some sidecar metadata (notably SeriesNumber) as
+    ``bids.layout.utils.PaddedInt`` rather than a plain ``int``, and in
+    general may hand back other int/float/str subclasses or numpy scalar
+    types. Those types serialize with yaml.dump() using an unsafe
+    ``!!python/object/...`` tag that yaml.safe_load() (used by
+    bids_generate.py) cannot construct, crashing the discover -> generate
+    pipeline on real scanner/dcm2niix data where SeriesNumber is the norm.
+
+    This coerces such values (and any nested inside list/tuple/dict) down to
+    plain int/float/str/list/dict so the manifest is always safe-dumpable and
+    safe-loadable. None and bool pass through unchanged (bool is an int
+    subclass, so it must be checked before the int case).
+    """
+    if v is None or isinstance(v, bool):
+        return v
+    if isinstance(v, dict):
+        return {_plain(k): _plain(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_plain(item) for item in v]
+    if isinstance(v, int):
+        return int(v)
+    if isinstance(v, float):
+        return float(v)
+    if isinstance(v, str):
+        return str(v)
+    return v
+
+
+def _get_metadata(layout: BIDSLayout, fpath: str) -> dict:
+    """layout.get_metadata(), coerced to plain YAML-safe types (see _plain)."""
+    return _plain(layout.get_metadata(fpath))
+
+
+# ---------------------------------------------------------------------------
 # Ordering helpers
 # ---------------------------------------------------------------------------
 
@@ -217,7 +257,7 @@ def discover_subject(
                 continue
             ent = layout.parse_file_entities(f)
             suffix = ent.get("suffix", "")
-            meta = layout.get_metadata(f)
+            meta = _get_metadata(layout, f)
             run = int(ent["run"]) if ent.get("run") is not None else 1
 
             if suffix == "epi":
@@ -278,7 +318,7 @@ def discover_subject(
             if not _keep(f):
                 continue
             ent = layout.parse_file_entities(f)
-            meta = layout.get_metadata(f)
+            meta = _get_metadata(layout, f)
             run = int(ent["run"]) if ent.get("run") is not None else 1
             sn = meta.get("SeriesNumber", 50 + run)
             ses_data["anat"].append({
@@ -319,7 +359,7 @@ def discover_subject(
             first = echoes[0]
             nii_path = first["nii_path"]
 
-            meta = layout.get_metadata(str(nii_path))
+            meta = _get_metadata(layout, str(nii_path))
             nvols_total = get_nvols(nii_path)
             nvols = max(0, nvols_total - skip)
             nechos = len(echoes)
@@ -614,7 +654,7 @@ def main():
             log.warning("  %s", w)
 
     with open(args.output, "w") as f:
-        yaml.dump(manifest, f, default_flow_style=False, sort_keys=False, width=120)
+        yaml.safe_dump(manifest, f, default_flow_style=False, sort_keys=False, width=120)
 
     log.info("Manifest written to %s", args.output)
     log.info("Subjects: %d, Tasks: %d, Warnings: %d",

@@ -443,3 +443,66 @@ def test_missing_tr_warns(tmp_path):
     r = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO)
     assert r.returncode == 0, r.stderr
     assert "RepetitionTime" in r.stderr, r.stderr
+
+
+def test_series_number_in_sidecars_does_not_break_pipeline(tmp_path):
+    """Real scanner/dcm2niix BIDS data routinely has an explicit SeriesNumber
+    (and other numeric fields) in anat/func/fmap JSON sidecars. pybids returns
+    such values as bids.layout.utils.PaddedInt rather than a plain int; if
+    bids_discover.py serializes that object with yaml.dump (unsafe tag) instead
+    of a plain int, bids_generate.py's yaml.safe_load(manifest) raises
+    ConstructorError and the discover -> generate pipeline crashes end to end.
+
+    This must PASS after the fix (plain-type coercion + yaml.safe_dump) and
+    FAIL against the pre-fix code (ConstructorError surfaced as a nonzero
+    bids_generate.py exit, or bids_discover.py itself failing to produce a
+    safe-loadable manifest).
+    """
+    ds = tmp_path / "ds"
+    s = ds / "sub-01" / "ses-01"
+    (s / "anat").mkdir(parents=True)
+    (s / "func").mkdir()
+    (s / "fmap").mkdir()
+
+    # Anat sidecar with SeriesNumber.
+    (s / "anat" / "sub-01_ses-01_T1w.nii.gz").write_bytes(b"")
+    _write_json(s / "anat" / "sub-01_ses-01_T1w.json",
+                {"SeriesNumber": 5, "Manufacturer": "Siemens"})
+
+    # Func sidecar with SeriesNumber + the usual numeric fields.
+    (s / "func" / "sub-01_ses-01_task-rest_bold.nii.gz").write_bytes(b"")
+    _write_json(s / "func" / "sub-01_ses-01_task-rest_bold.json",
+                {"SeriesNumber": 9, "RepetitionTime": 2.0, "EchoTime": 0.03,
+                 "PhaseEncodingDirection": "j-"})
+
+    # Fieldmap (phasediff) sidecar with SeriesNumber on both mag and phase.
+    (s / "fmap" / "sub-01_ses-01_magnitude1.nii.gz").write_bytes(b"")
+    _write_json(s / "fmap" / "sub-01_ses-01_magnitude1.json",
+                {"SeriesNumber": 2})
+    (s / "fmap" / "sub-01_ses-01_phasediff.nii.gz").write_bytes(b"")
+    _write_json(s / "fmap" / "sub-01_ses-01_phasediff.json",
+                {"SeriesNumber": 3, "Manufacturer": "Siemens",
+                 "EchoTimeDifference": 0.00246})
+
+    man = tmp_path / "m.yaml"
+    r_disc = _run("bids_discover.py", ds, "--output", man)
+    assert r_disc.returncode == 0, r_disc.stderr
+
+    # The manifest must be safe-loadable (this is what actually catches the
+    # bug: pre-fix, the SeriesNumber PaddedInt is dumped with an unsafe
+    # !!python/object/... tag that safe_load cannot construct).
+    import yaml
+    with open(man) as f:
+        text = f.read()
+    manifest = yaml.safe_load(text)  # raises yaml.constructor.ConstructorError pre-fix
+    assert "!!python" not in text, text
+
+    bold = manifest["subjects"]["01"]["sessions"]["01"]["bold"][0]
+    assert bold["series_number"] == 9
+    assert isinstance(bold["series_number"], int)
+
+    gen = tmp_path / "gen"
+    r_gen = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO)
+    assert r_gen.returncode == 0, r_gen.stderr
+    assert next(gen.rglob("scanlist_*.csv")).exists()
+    assert next(gen.rglob("*.cfg")).exists()
