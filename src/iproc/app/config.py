@@ -109,8 +109,12 @@ class execution(_Config):
     log_level: int = 25
     dry_run: bool = False
 
-    #: Runtime-only pybids BIDSLayout handle. Populated by the CLI (T7)
-    #: after BIDS discovery; never read from or written to a config file.
+    #: Runtime-only pybids BIDSLayout handle. Set by ``iproc-app``'s
+    #: ``populate_config()`` (T10) right after the CLI builds the layout
+    #: once in ``main()`` -- the same layout object is then reused for
+    #: participant resolution AND per-participant discovery (instead of
+    #: pybids re-indexing the dataset once per participant). Never read
+    #: from or written to a config file (see ``_hidden`` below).
     layout: Any = None
 
     _paths = ("bids_dir", "output_dir", "work_dir")

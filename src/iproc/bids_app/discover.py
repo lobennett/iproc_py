@@ -453,8 +453,17 @@ def discover_dataset(
     resolution: int,
     echo_time_diff: float,
     subjects: list[str] | None = None,
+    layout: BIDSLayout | None = None,
 ) -> dict:
-    """Discover the entire BIDS dataset."""
+    """Discover the entire BIDS dataset.
+
+    ``layout``: an optional pre-built ``BIDSLayout`` to reuse instead of
+    indexing ``bids_root`` again. Callers that already built a layout for
+    another purpose (e.g. ``iproc-app`` resolving participants) should pass
+    it here so the dataset is indexed once, not once per caller. When
+    ``None`` (the default -- e.g. the standalone ``bids_discover`` CLI),
+    a fresh layout is built exactly as before.
+    """
     bids_root = bids_root.resolve()
 
     if not bids_root.is_dir():
@@ -463,9 +472,11 @@ def discover_dataset(
 
     bidsignore = load_bidsignore_patterns(bids_root)
 
-    # Index the dataset once with pybids. validate=False so partially-BIDS or
-    # in-progress datasets still index; discovery is tolerant by design.
-    layout = BIDSLayout(str(bids_root), validate=False)
+    # Index the dataset once with pybids (unless a layout was already built
+    # and handed to us). validate=False so partially-BIDS or in-progress
+    # datasets still index; discovery is tolerant by design.
+    if layout is None:
+        layout = BIDSLayout(str(bids_root), validate=False)
 
     all_labels = sorted(layout.get_subjects(), key=_num_key)
 
@@ -611,8 +622,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_discover(args: argparse.Namespace) -> dict:
-    """Run discovery from parsed args: build manifest, warn, and write it out."""
+def run_discover(args: argparse.Namespace, layout: BIDSLayout | None = None) -> dict:
+    """Run discovery from parsed args: build manifest, warn, and write it out.
+
+    ``layout``: optional pre-built ``BIDSLayout`` forwarded to
+    ``discover_dataset`` (see there); ``None`` builds a fresh one as before.
+    """
     manifest = discover_dataset(
         args.bids_root,
         skip=args.skip,
@@ -620,6 +635,7 @@ def run_discover(args: argparse.Namespace) -> dict:
         resolution=args.resolution,
         echo_time_diff=args.echo_time_diff,
         subjects=args.subjects,
+        layout=layout,
     )
 
     warnings = validate_manifest(manifest)

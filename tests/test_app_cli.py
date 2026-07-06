@@ -285,6 +285,97 @@ def test_dry_run_does_not_write_dataset_description(complete_bids, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_run_writes_config_provenance_dump(complete_bids, tmp_path):
+    """T10: a real run persists the config singleton for provenance.
+
+    Makes the T6/T9 config singleton load-bearing rather than
+    populated-and-ignored: it must be written to disk, contain the
+    execution/workflow sections, and never leak the hidden runtime
+    ``layout`` handle (it isn't JSON-serializable and must stay hidden).
+    """
+    out = tmp_path / "out"
+    rc = cli.main([str(complete_bids), str(out), "participant"])
+    assert rc == 0
+
+    cfg_path = out / "iproc_config.json"
+    assert cfg_path.exists(), "expected iproc-app to dump config for provenance"
+
+    data = json.loads(cfg_path.read_text())  # must be valid JSON
+    assert "execution" in data
+    assert "workflow" in data
+    assert "layout" not in data["execution"]
+    assert data["execution"]["participant_label"] == ["01"]
+    assert data["execution"]["output_dir"] == str(out.resolve())
+    assert data["workflow"]["analysis_level"] == "participant"
+
+
+def test_dry_run_does_not_write_config_provenance_dump(complete_bids, tmp_path, capsys):
+    out = tmp_path / "out"
+    rc = cli.main([str(complete_bids), str(out), "participant", "--dry-run"])
+    assert rc == 0
+    assert not (out / "iproc_config.json").exists()
+
+    printed = capsys.readouterr().out
+    # the plan mentions the provenance dump would happen on a real run, and
+    # that it is skipped here
+    assert "iproc_config.json" in printed
+    assert "dry-run" in printed.lower() or "skipped" in printed.lower()
+
+
+def test_layout_built_once_and_reused_for_discovery(complete_bids, tmp_path):
+    """T10 N+1 fix: one BIDSLayout for the whole run, not one per participant.
+
+    Before this fix, ``resolve_participants`` built a ``BIDSLayout`` and
+    ``discover.discover_dataset`` (called once per participant from
+    ``_run_participant``) built ANOTHER one every time. Wrap the real class
+    so real indexing still happens (participant resolution/discovery need a
+    working layout), but count constructions in both modules' namespaces.
+    """
+    from bids import BIDSLayout as RealBIDSLayout
+
+    out = tmp_path / "out"
+    with patch("iproc.app.cli.BIDSLayout", wraps=RealBIDSLayout) as mock_cli_layout, \
+         patch("iproc.bids_app.discover.BIDSLayout", wraps=RealBIDSLayout) as mock_discover_layout:
+        rc = cli.main([str(complete_bids), str(out), "participant"])
+
+    assert rc == 0
+    assert mock_cli_layout.call_count == 1, (
+        "iproc-app's main() must build the BIDSLayout exactly once"
+    )
+    mock_discover_layout.assert_not_called()
+    # the layout built in main() ends up on the config singleton
+    assert config.execution.layout is not None
+
+
+def test_discover_dataset_reuses_injected_layout_without_rebuilding(complete_bids):
+    """Unit-level: ``discover_dataset(..., layout=...)`` uses the layout it is
+
+    handed instead of building a new one, even for a dataset it has never
+    indexed itself -- proving the injected layout is the one actually used,
+    not just accepted and ignored.
+    """
+    from bids import BIDSLayout as RealBIDSLayout
+
+    from iproc.bids_app import discover as discover_mod
+
+    real_layout = RealBIDSLayout(str(complete_bids), validate=False)
+    with patch(
+        "iproc.bids_app.discover.BIDSLayout",
+        side_effect=AssertionError("discover_dataset must not rebuild a layout"),
+    ):
+        manifest = discover_mod.discover_dataset(
+            complete_bids,
+            skip=7,
+            smoothing=6.0,
+            resolution=222,
+            echo_time_diff=0.002272,
+            subjects=["01"],
+            layout=real_layout,
+        )
+
+    assert "01" in manifest["subjects"]
+
+
 def test_live_stage_run_invokes_iproc_engine_once_per_participant(complete_bids, tmp_path):
     """``--stage`` without ``--dry-run`` subprocess-invokes the ``iproc`` engine.
 

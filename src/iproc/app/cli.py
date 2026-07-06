@@ -35,6 +35,8 @@ from argparse import Namespace
 from importlib import metadata
 from pathlib import Path
 
+from bids import BIDSLayout
+
 from iproc.app import config
 from iproc.app.derivatives import write_dataset_description
 from iproc.bids_app import discover, generate
@@ -156,17 +158,23 @@ def validate_args(args: Namespace, parser: argparse.ArgumentParser) -> None:
 
 
 def resolve_participants(
-    bids_dir: Path, participant_label: list[str] | None
+    bids_dir: Path,
+    participant_label: list[str] | None,
+    layout: BIDSLayout | None = None,
 ) -> list[str]:
     """Enumerate ``sub-*`` in ``bids_dir`` via pybids and intersect requests.
 
     A leading ``sub-`` is stripped from each requested label. Any requested
     label not present in the dataset raises ``SystemExit`` naming the missing
     label(s). Returns a sorted list of participant labels (no ``sub-`` prefix).
-    """
-    from bids import BIDSLayout
 
-    layout = BIDSLayout(str(bids_dir), validate=False)
+    ``layout``: an optional pre-built ``BIDSLayout`` to reuse (see ``main()``,
+    which builds the layout exactly once and reuses it here and for
+    discovery). When ``None`` (e.g. direct/test callers), a layout is built
+    just for this call, as before.
+    """
+    if layout is None:
+        layout = BIDSLayout(str(bids_dir), validate=False)
     available = set(layout.get_subjects())
 
     if not participant_label:
@@ -188,7 +196,11 @@ def resolve_participants(
 # Config population
 # ---------------------------------------------------------------------------
 
-def populate_config(args: Namespace, participants: list[str]) -> None:
+def populate_config(
+    args: Namespace,
+    participants: list[str],
+    layout: BIDSLayout | None = None,
+) -> None:
     """Populate the T6 config singleton from parsed args (reassign, don't mutate).
 
     ``bids_dir``/``output_dir`` are required positional ``Path`` args (never
@@ -198,6 +210,14 @@ def populate_config(args: Namespace, participants: list[str]) -> None:
     validation belongs here once ``iproc-app`` gains config-file or
     ``--bids-filter-file`` ingestion (arbitrary user-supplied keys that
     argparse can't already guarantee) — reintroduce it then.
+
+    ``layout``: the ``BIDSLayout`` ``main()`` built once (participant
+    resolution + discovery both reuse it); stashed on the hidden
+    ``config.execution.layout`` runtime handle. This makes the config
+    singleton load-bearing rather than populated-and-ignored: the run loop
+    reads ``output_dir``/``work_dir``/``stage``/``dry_run``/
+    ``participant_label`` back off ``config.execution``/``config.workflow``,
+    and the whole singleton is dumped to ``iproc_config.json`` for provenance.
     """
     config.execution.bids_dir = args.bids_dir.resolve()
     config.execution.output_dir = args.output_dir.resolve()
@@ -206,6 +226,7 @@ def populate_config(args: Namespace, participants: list[str]) -> None:
     )
     config.execution.participant_label = list(participants)
     config.execution.dry_run = bool(args.dry_run)
+    config.execution.layout = layout
 
     config.workflow.analysis_level = args.analysis_level
     config.workflow.stage = args.stage
@@ -249,9 +270,21 @@ def _print_next_step_guidance() -> None:
           "engine.")
 
 
-def _run_participant(args: Namespace, label: str, work_dir: Path) -> None:
-    """Discovery + generation for one participant, then optional stage."""
+def _run_participant(
+    args: Namespace,
+    label: str,
+    work_dir: Path,
+    layout: BIDSLayout | None = None,
+) -> None:
+    """Discovery + generation for one participant, then optional stage.
+
+    ``layout``: the once-built ``BIDSLayout`` from ``main()``, forwarded to
+    ``discover.run_discover`` so it is reused instead of pybids re-indexing
+    the whole dataset per participant (the N+1 fix).
+    """
     manifest_out = _manifest_path(work_dir, label)
+    output_dir = config.execution.output_dir
+    stage = config.workflow.stage
 
     # 1. Discovery -> manifest (scoped to this one subject).
     discover_ns = Namespace(
@@ -263,12 +296,12 @@ def _run_participant(args: Namespace, label: str, work_dir: Path) -> None:
         echo_time_diff=args.echo_time_diff,
         subjects=[label],
     )
-    discover.run_discover(discover_ns)
+    discover.run_discover(discover_ns, layout=layout)
 
     # 2. Generation -> iProc .cfg + scanlist under output_dir.
     generate_ns = Namespace(
         manifest=manifest_out,
-        iproc_dir=args.output_dir,
+        iproc_dir=output_dir,
         codedir=None,
         fsldir="/opt/fsl-5.0.10",
         freesurfer_home="/opt/freesurfer-6.0.0",
@@ -280,9 +313,9 @@ def _run_participant(args: Namespace, label: str, work_dir: Path) -> None:
     generate.run_generate(generate_ns)
 
     # 3. Optional single stage via the existing iProc engine.
-    if args.stage:
-        cmd = _stage_command(args.bids_dir, args.output_dir, label, args.stage)
-        print(f"\nRunning stage '{args.stage}' for sub-{label}:")
+    if stage:
+        cmd = _stage_command(args.bids_dir, output_dir, label, stage)
+        print(f"\nRunning stage '{stage}' for sub-{label}:")
         print("  " + " ".join(cmd))
         subprocess.run(cmd, check=True)
 
@@ -293,6 +326,8 @@ def _print_dry_run(args: Namespace, participants: list[str], work_dir: Path) -> 
     print(f"output_dir: {args.output_dir}")
     print(f"resolved participants: {', '.join(participants) or '(none)'}")
     print(f"would write BIDS-Derivatives {args.output_dir}/dataset_description.json")
+    print(f"would write config provenance {args.output_dir}/iproc_config.json "
+          "(skipped under --dry-run)")
     for label in participants:
         manifest_out = _manifest_path(work_dir, label)
         print(f"\n--- sub-{label} ---")
@@ -316,30 +351,52 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     validate_args(args, parser)
-    participants = resolve_participants(args.bids_dir, args.participant_label)
+
+    # Build the BIDSLayout exactly ONCE: reused for participant resolution
+    # here and for discovery per-participant below (instead of pybids
+    # re-indexing the whole dataset N+1 times). Stashed on
+    # config.execution.layout by populate_config().
+    layout = BIDSLayout(str(args.bids_dir), validate=False)
+
+    participants = resolve_participants(
+        args.bids_dir, args.participant_label, layout=layout
+    )
     if not participants:
         parser.error(f"no participants found in {args.bids_dir}")
 
-    populate_config(args, participants)
+    populate_config(args, participants, layout=layout)
 
-    work_dir = (args.work_dir or args.output_dir).resolve()
+    # From here on, the config singleton (populated above) is the source of
+    # truth for the run, not the raw argparse Namespace.
+    output_dir = config.execution.output_dir
+    work_dir = config.execution.work_dir or output_dir
+    dry_run = config.execution.dry_run
+    stage = config.workflow.stage
+    labels = config.execution.participant_label
 
-    if args.dry_run:
-        _print_dry_run(args, participants, work_dir)
+    if dry_run:
+        _print_dry_run(args, labels, work_dir)
         return 0
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
 
     # Mark output_dir as a BIDS-Derivatives dataset (dataset_description.json).
-    desc = write_dataset_description(args.output_dir)
+    desc = write_dataset_description(output_dir)
     print(f"wrote {desc}")
 
-    for label in participants:
-        print(f"\n=== Preparing iProc config for sub-{label} ===")
-        _run_participant(args, label, work_dir)
+    # Provenance dump: persist the (now load-bearing) config singleton
+    # alongside the derivatives, so a run is reproducible/inspectable after
+    # the fact. Skipped under --dry-run (nothing is written there).
+    config_path = output_dir / "iproc_config.json"
+    config.to_filename(config_path)
+    print(f"wrote {config_path}")
 
-    if not args.stage:
+    for label in labels:
+        print(f"\n=== Preparing iProc config for sub-{label} ===")
+        _run_participant(args, label, work_dir, layout=layout)
+
+    if not stage:
         _print_next_step_guidance()
 
     return 0
