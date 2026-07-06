@@ -31,6 +31,40 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 JobSpec = commons.JobSpec
 
+
+def _resolve_unique_bids_file(patterns, description, predicate=None):
+    '''Resolve exactly one BIDS input file from one or more glob patterns.
+
+    Unions the glob matches across all ``patterns``, optionally filters them
+    with ``predicate`` (a callable path -> bool), and sorts the survivors for
+    deterministic selection. Raises a clear ``IOError`` when zero or more than
+    one file matches, rather than silently taking an arbitrary ``glob.glob``
+    ordering result. ``description`` names what was sought for error messages.
+    '''
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    matches = set()
+    for pattern in patterns:
+        matches.update(glob.glob(pattern))
+    if predicate is not None:
+        matches = {m for m in matches if predicate(m)}
+    matches = sorted(matches)
+    if not matches:
+        searched = '\n  '.join(patterns)
+        raise IOError(
+            f'No {description} found matching:\n  {searched}'
+        )
+    if len(matches) > 1:
+        candidates = '\n  '.join(matches)
+        raise IOError(
+            f'Ambiguous {description}: {len(matches)} files matched, expected '
+            f'exactly one:\n  {candidates}\n'
+            'Disambiguate by excluding the unwanted files (e.g. via a '
+            '.bidsignore entry) or by using a more specific scanlist so that '
+            'a single file is selected.'
+        )
+    return matches[0]
+
 class jobConstructor(object):
     def __init__(self, conf,scans,args):
         self.conf = conf
@@ -59,15 +93,22 @@ class jobConstructor(object):
             for anat_dir,anat_scan in self.scans.anats():
                 run = anat_scan['BIDS_ID']
                 logger.info(f'processing sub={sub}, ses={ses}, anat={run}')
-                # Use glob to find the T1w file regardless of optional BIDS entities (e.g. acq-)
-                anat_glob = os.path.join(
-                    self.args.bids,
-                    f'ses-{sanitize(ses)}/anat/sub-{sanitize(sub)}_ses-{sanitize(ses)}_*_run-{run}_T1w.nii.gz'
-                )
-                anat_matches = glob.glob(anat_glob)
-                if not anat_matches:
-                    raise IOError(f'No T1w file found matching: {anat_glob}')
-                bids_anat_file = anat_matches[0]
+                # Resolve the T1w file regardless of optional BIDS entities
+                # (e.g. acq-). Search BOTH the plain canonical name (no
+                # interposed entity) and the with-entity form, then union them
+                # so a plain sub-X_ses-Y_run-Z_T1w.nii.gz still resolves.
+                anat_dir_path = os.path.join(self.args.bids, f'ses-{sanitize(ses)}/anat')
+                anat_globs = [
+                    os.path.join(
+                        anat_dir_path,
+                        f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_run-{run}_T1w.nii.gz'
+                    ),
+                    os.path.join(
+                        anat_dir_path,
+                        f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_*_run-{run}_T1w.nii.gz'
+                    ),
+                ]
+                bids_anat_file = _resolve_unique_bids_file(anat_globs, 'T1w file')
                 #scan_no is set automatically by self.scans.anats()
                 run_zpad = f'{int(self.scans.scan_no):03d}'  # note that this is the ScanNumber, not the BIDS run number
                 anat_basename = f'{ses}_mpr{run_zpad}'
@@ -128,10 +169,11 @@ class jobConstructor(object):
                 if int(numechos) == 1:
 
                     func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_run-{run}_bold.nii.gz')
-                    func_matches = [f for f in glob.glob(func_glob) if f.lower().count(f'task-{bids_task_name.lower()}_') == 1]
-                    if not func_matches:
-                        raise IOError(f'No BOLD file found matching (case-insensitive task={bids_task_name}): {func_glob}')
-                    bids_func_file = func_matches[0]
+                    bids_func_file = _resolve_unique_bids_file(
+                        func_glob,
+                        f'BOLD file (case-insensitive task={bids_task_name})',
+                        predicate=lambda f: f.lower().count(f'task-{bids_task_name.lower()}_') == 1,
+                    )
                     run_zpad = f'{int(bold_scan["BLD"]):03d}'
 
                     task_dirname = os.path.join(self.conf.iproc.NATDIR, ses, f'{task_name}_{run_zpad}')
@@ -171,10 +213,11 @@ class jobConstructor(object):
                 else:
                     for iEcho in range(1,int(numechos) + 1):
                         func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_run-{run}_echo-{iEcho}_bold.nii.gz')
-                        func_matches = [f for f in glob.glob(func_glob) if f.lower().count(f'task-{bids_task_name.lower()}_') == 1]
-                        if not func_matches:
-                            raise IOError(f'No BOLD file found matching (case-insensitive task={bids_task_name}): {func_glob}')
-                        bids_func_file = func_matches[0]
+                        bids_func_file = _resolve_unique_bids_file(
+                            func_glob,
+                            f'BOLD file (case-insensitive task={bids_task_name}, echo={iEcho})',
+                            predicate=lambda f: f.lower().count(f'task-{bids_task_name.lower()}_') == 1,
+                        )
                         run_zpad = f'{int(bold_scan["BLD"]):03d}'
 
                         task_dirname = os.path.join(self.conf.iproc.NATDIR, ses, f'{task_name}_{run_zpad}')
