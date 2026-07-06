@@ -44,6 +44,9 @@ an HPC site-profile + wizard launcher, tests, and a validation harness. See `doc
 - `docs/usage.md` — install, the six processing stages + manual QC
   checkpoints between them, running locally vs. via container vs. via
   `launch/iproc-run`, and the BIDS `discover → review → generate → run` flow.
+- `docs/pipeline-walkthrough.md` — deep step-by-step walkthrough of each
+  stage's internal steps, runscripts, and tools, plus the config-time
+  routing decisions (fieldmap regime, T1 selection, midvol, echo count).
 - `docs/dependencies.md` — upstream's validated dependency versions, plus
   what the container provides and how it maps onto them.
 - `docs/generalization.md` — the detect-and-preserve model, every fieldmap

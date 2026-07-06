@@ -82,6 +82,11 @@ chain all six stages unattended for a first run on new data; the fieldmap
 and alignment checkpoints (stages 1, 3, 4) are where scanner- or
 regime-specific problems surface.
 
+For a deeper, step-by-step walkthrough of what runs *inside* each stage
+(the individual `steps.*` calls, runscripts, tools, and the config-time
+routing decisions), see
+[`pipeline-walkthrough.md`](pipeline-walkthrough.md).
+
 ## Running: local vs. container vs. cluster
 
 **Local / bare-metal** (dev, or a host that already has FSL/FreeSurfer/AFNI/
