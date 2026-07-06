@@ -3,10 +3,12 @@
 import os
 import re
 import sys
+import json
+import math
 import shutil
 import logging
 import argparse as ap
-import tempfile as tf 
+import tempfile as tf
 import subprocess as sp
 import iproc.commons as commons
 
@@ -42,6 +44,10 @@ def main():
     logger.info(f'created temporary working directory: {tempd}')
     os.chdir(tempd)
 
+    # Preserve the original phase input path(s) before merge() destructively
+    # pops from the list, so the adjacent JSON sidecar can still be located.
+    orig_fmapp_inputs = list(args.input_fmapp)
+
     # copy or merge magnitude image(s)
     fmapm = os.path.join(tempd, os.path.basename(args.output_fmapm))
     merge(args.input_fmapm, fmapm)
@@ -58,11 +64,17 @@ def main():
     fmapm_eroded = os.path.join(tempd, f'{fmapm_prefix}_brain_ero.nii.gz')
     erode(fmapm_bet, fmapm_eroded)
     
+    # Read Manufacturer from the phase input's adjacent JSON sidecar to decide
+    # the fieldmap-preparation path. Siemens/Varian (or unknown/absent) take
+    # upstream's exact fsl_prepare_fieldmap SIEMENS ... 2.46 path (delta_te is
+    # kept hardcoded 2.46 for byte-behavior parity with upstream — it is NOT
+    # read from JSON). GE/Philips take the Hz->rad/s branch (new capability).
+    manufacturer = read_manufacturer(orig_fmapp_inputs)
+
     # prepare the field map
     fieldmap = os.path.join(tempd, os.path.basename(args.output_fieldmap))
-    print('-----in line 62-------')
-    prepare_fieldmap((fmapp, fmapm_eroded), fieldmap, scanner='SIEMENS', delta_te=2.46)
-    ##, args.output_maskcopy)
+    prepare_fieldmap((fmapp, fmapm_eroded), fieldmap,
+                     manufacturer=manufacturer, delta_te=2.46)
 
     # move derived files to final destination
     logger.info('moving %s to %s', fmapm, args.output_fmapm)
@@ -143,16 +155,57 @@ def erode(input, output, invert=True):
     logger.info(cmd)
     commons.check_output(cmd, shell=True)
 
-def prepare_fieldmap(input, output, scanner='SIEMENS', delta_te=2.46):
-    fmapp,fmapm_eroded = input
-    cmd = [
-        'fsl_prepare_fieldmap',
-        scanner,
-        fmapp,
-        fmapm_eroded,
-        output,
-        str(delta_te)
-    ]
+def read_manufacturer(fmapp_inputs):
+    '''Read 'Manufacturer' from the phase input's adjacent JSON sidecar.
+
+    Returns the manufacturer string (upper-cased), or '' if no sidecar exists
+    or the field is absent/unreadable. Only the manufacturer is read here; the
+    echo-time delta is intentionally NOT read, because the Siemens/Varian path
+    keeps upstream's hardcoded 2.46 ms for byte-behavior parity with upstream.
+    '''
+    for inp in fmapp_inputs:
+        candidate = re.sub(r'\.nii(\.gz)?$', '.json', inp)
+        if os.path.exists(candidate):
+            try:
+                with open(candidate) as f:
+                    js = json.load(f)
+            except Exception as e:  # noqa: BLE001
+                logger.warning('could not read JSON sidecar %s: %s', candidate, e)
+                return ''
+            mfr = js.get('Manufacturer', '') or ''
+            logger.info('phase JSON sidecar %s: Manufacturer=%r', candidate, mfr)
+            return mfr.upper()
+    logger.info('no phase JSON sidecar found; defaulting to upstream SIEMENS path')
+    return ''
+
+
+def choose_fieldmap_cmd(manufacturer, delta_te, phase, eroded_mag, out):
+    '''Build the fieldmap-preparation argv (pure; no FSL execution).
+
+    GE/Philips -> ``fslmaths <phase> -mul <2*pi> -mas <eroded_mag> <out>``:
+        GE/Philips fieldmaps are Hz maps; multiply by 2*pi for Hz->rad/s then
+        mask with the eroded brain magnitude. This is a new capability upstream
+        lacks (upstream/fsl_prepare_fieldmap only supports SIEMENS/VARIAN).
+
+    Otherwise (Siemens/Varian, or manufacturer absent/unknown) ->
+        ``fsl_prepare_fieldmap SIEMENS <phase> <eroded_mag> <out> 2.46``:
+        upstream's exact command. ``delta_te`` is passed in hardcoded (2.46)
+        and never read from JSON, so this path stays byte-behavior-identical
+        to upstream.
+    '''
+    mfr = (manufacturer or '').upper()
+    if 'GE' in mfr or 'PHILIPS' in mfr:
+        two_pi = 2 * math.pi
+        logger.warning(
+            'GE/Philips fieldmap (Manufacturer=%s): using Hz->rad/s conversion '
+            '(x%.6f) -- VERIFY results', mfr, two_pi)
+        return ['fslmaths', phase, '-mul', f'{two_pi:.6f}', '-mas', eroded_mag, out]
+    return ['fsl_prepare_fieldmap', 'SIEMENS', phase, eroded_mag, out, str(delta_te)]
+
+
+def prepare_fieldmap(input, output, manufacturer=None, delta_te=2.46):
+    fmapp, fmapm_eroded = input
+    cmd = choose_fieldmap_cmd(manufacturer, delta_te, fmapp, fmapm_eroded, output)
     logger.info(cmd)
     commons.check_output(cmd)
 

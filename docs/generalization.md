@@ -63,18 +63,31 @@ directory and returns a `Decision` (`value`, `confidence`, `rationale`,
      ("Manufacturer missing in JSON; defaulting to SIEMENS — VERIFY"),
      because silently guessing SIEMENS is the upstream-compatible default,
      but it is still a guess.
-   - **GE or Philips** → same `fsl_prepare_fieldmap` routing, but flagged
-     `ge_special=True` with an explicit warning: **"using GE Hz-fieldmap
-     path (new capability, not upstream) — VERIFY results."** This is new
-     capability relative to upstream (which only ever saw Siemens/Varian in
-     practice) — see `bids_setup/README.md`'s `×2π` handling in
-     `fmap_from_bids.py` and `docs/fork-audit.md` bucket B. It is not
-     scientifically validated the way the Siemens path is; treat any GE run
-     as needing its own QC pass, not a rubber-stamp of the Siemens
+   - **GE or Philips** → flagged `ge_special=True` with an explicit warning
+     (**"GE/Philips fieldmap … using Hz→rad/s conversion (new capability, not
+     upstream) — VERIFY results"**) and routed to a **different preparation
+     path** in `runscript/fmap_from_bids.py`. GE/Philips fieldmaps are Hz maps,
+     not the Siemens phase-difference convention, so they are *not* run through
+     `fsl_prepare_fieldmap` at all: `fmap_from_bids.py` reads `Manufacturer`
+     from the phase JSON sidecar and, for GE/Philips, builds
+     `fslmaths <phase> -mul 2π -mas <eroded_mag> <out>` (Hz→rad/s), via the
+     pure helper `choose_fieldmap_cmd()`. This is new capability relative to
+     upstream, which only supports SIEMENS/VARIAN and would silently
+     mis-process a GE map with the wrong (Siemens, 2.46 ms) convention — see
+     `docs/fork-audit.md` bucket B (T2). (Earlier drafts claimed GE was routed
+     through `fsl_prepare_fieldmap` like Siemens, or that a fork applied `×2π`
+     by default; neither is what this package does — GE/Philips get the
+     dedicated Hz→rad/s branch, and Siemens/Varian are untouched.) The GE path
+     is not scientifically validated the way the Siemens path is; treat any GE
+     run as needing its own QC pass, not a rubber-stamp of the Siemens
      confidence level.
    - The echo-time delta (`delta_te_ms`) is read from `EchoTimeDifference`
      if present, else derived from `EchoTime1`/`EchoTime2`; missing both is
-     also flagged low-confidence.
+     also flagged low-confidence. This value is recorded as **detection
+     evidence only** — for the Siemens/Varian path, `fmap_from_bids.py`
+     deliberately keeps upstream's hardcoded 2.46 ms and does **not** feed the
+     JSON ΔTE into `fsl_prepare_fieldmap` (byte-behavior parity with
+     upstream); the GE/Philips branch does not use ΔTE at all.
 
 3. **Direct (`_fieldmap` file, no phase/magnitude pair) → `direct`.**
    Always low-confidence ("direct-fieldmap path is uncommon; VERIFY") —

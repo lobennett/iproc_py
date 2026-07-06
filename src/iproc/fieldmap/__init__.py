@@ -101,7 +101,7 @@ def detect_regime(fmap_dir: Path) -> Decision:
         if dte is None:
             conf = "low"; warnings.append("phasediff: EchoTimeDifference/EchoTime1&2 missing; VERIFY")
         if ge:
-            warnings.append(f"phasediff manufacturer={mfr}: using GE Hz-fieldmap path (new capability, not upstream) — VERIFY results")
+            warnings.append(f"GE/Philips fieldmap (manufacturer={mfr}): using Hz→rad/s conversion (new capability, not upstream) — VERIFY results")
         d = Decision("phasediff", conf, "magnitude + phase(diff) present (fsl_prepare_fieldmap)",
                      {"preptool": "fsl_prepare_fieldmap", "manufacturer": mfr,
                       "delta_te_ms": dte, "ge_special": ge}, warnings)

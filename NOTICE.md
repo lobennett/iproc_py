@@ -11,4 +11,5 @@ Scientific behavior matches upstream. Deviations are limited to:
 | File | Change | Reason |
 |------|--------|--------|
 | src/iproc/cli/iproc.py | CODEDIR fallback → package dir | assets vendored inside the package |
+| src/iproc/runscript/fmap_from_bids.py | added GE/Philips Hz→rad/s branch (capability upstream lacks); Siemens/Varian path unchanged, byte-behavior-identical to upstream | GE fieldmaps are Hz maps needing `fslmaths -mul 2π -mas`, not `fsl_prepare_fieldmap` |
 | (Task 3 neutral env fixes) | see docs/fork-audit.md §A | container portability; numerics-neutral |

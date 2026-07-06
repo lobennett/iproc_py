@@ -17,7 +17,10 @@ NEUTRAL_FROM_FORK = [
     "iProc_p4_sbatch_combined.py", "iProc_p4_sbatch_combined_ME.py",
 ]
 # Files with our own edits (compared explicitly, not to a baseline).
-OURS = {"cli/iproc.py", "steps.py"}
+# runscript/fmap_from_bids.py adds a GE/Philips Hz→rad/s branch (capability
+# upstream lacks); its Siemens/Varian path is byte-behavior-identical to
+# upstream. See NOTICE.md / docs/fork-audit.md.
+OURS = {"cli/iproc.py", "steps.py", "runscript/fmap_from_bids.py"}
 
 def _iter_upstream_core():
     for f in (UP / "iproc").rglob("*"):

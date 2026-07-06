@@ -26,7 +26,7 @@ only numerics-neutral infrastructure fixes. "Decision" is what this package does
 | iproc/steps.py | output rename `_wbonly`→`_wb_resid` (L1772/1780/1959 upstream) | keep upstream name `_wbonly` | Task 3 (do NOT port) |
 | runscript/compute_T1_MNI_warp.sh | drop `fslswapdim`, FLIRT ±30, inline hex-fix | keep upstream verbatim; hex-float handled by container flirt wrapper | Task 6 (orientation, opt-in) |
 | runscript/fm_unw.sh | dim-check hard-fail → warn | keep upstream hard check; expose warn as opt-in | Task 7 |
-| runscript/fmap_from_bids.py | GE `×2π` branch, JSON delta_te/manufacturer | upstream Siemens default; GE = new capability (Task 5/7), flagged | Task 5/7 |
+| runscript/fmap_from_bids.py | GE `×2π` branch, JSON delta_te/manufacturer | **APPLIED (T2):** added GE/Philips Hz→rad/s branch (`fslmaths <phase> -mul 2π -mas <eroded_mag> <out>`) — a capability upstream lacks; reads only `Manufacturer` from the phase JSON sidecar. Siemens/Varian (and unknown/absent manufacturer) path is **byte-behavior-identical to upstream** (`fsl_prepare_fieldmap SIEMENS … 2.46`). ΔTE is **NOT** read from JSON — kept hardcoded 2.46 ms for parity (the fork's JSON-ΔTE change is deliberately **not** ported). Decision routed through the pure, FSL-free helper `choose_fieldmap_cmd()`. File is on the source-identity test's `OURS` allowlist. | T2 (done) |
 | iproc/bids/__init__.py | anat regex loosening, conditional anat-JSON | generalization (session/entity) | Task 7 |
 | iproc/qc/__init__.py | treat convert OK if PDF exists | infra, verify neutrality | Task 3 (verify) or Task 9 |
 
