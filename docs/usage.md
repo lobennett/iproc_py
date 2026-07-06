@@ -178,6 +178,32 @@ See `bids_setup/README.md` for the full flag reference (`--skip`,
 design-decision table (T1 selection, MIDVOL target, SeriesNumber synthesis,
 etc.).
 
+## BIDS-App interface (`iproc-app`)
+
+For a standard, nipreps-style entry point there is an additive console command
+(the config-based `iproc -c <cfg> -s <stage>` engine is unchanged and remains
+the thing that actually runs a stage):
+
+```bash
+iproc-app <bids_dir> <output_dir> participant [--participant-label LBL ...] \
+    [-w WORKDIR] [--stage STAGE] [--dry-run]
+```
+
+It resolves participants from the BIDS tree (pybids), runs discover → generate
+to produce each subject's iProc `.cfg`/scanlist under `output_dir`, and — because
+iProc requires **manual QC between stages** — does *not* blindly run all six
+stages: pass `--stage <name>` to run exactly one stage (handed to the `iproc`
+engine), or omit it to just prepare configs and print ordered next-step guidance.
+Only `participant` level is supported (iProc is single-subject); `group` is
+rejected. `--dry-run` prints the plan and writes nothing.
+
+**Outputs.** `iproc-app` writes a BIDS-Derivatives `dataset_description.json` at
+the `output_dir` root (`DatasetType: derivative`, `GeneratedBy: iproc`, with an
+acknowledgement pointing back to upstream harvard-nrg/iProc). Individual iProc
+result files currently keep their iProc-native names under
+`output_dir/mri_data/<sub>/...`; full per-file BIDS-Derivatives naming
+(`space-*`, `desc-*`) is future work.
+
 ## Examples
 
 - `bids_setup/README.md` — a worked example end to end (discover → review →

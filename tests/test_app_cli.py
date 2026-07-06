@@ -261,6 +261,25 @@ def test_participant_run_generates_configs_and_prints_guidance(complete_bids, tm
     assert "qc" in printed.lower()
 
 
+def test_run_writes_bids_derivatives_description(complete_bids, tmp_path):
+    import json
+    out = tmp_path / "out"
+    rc = cli.main([str(complete_bids), str(out), "participant"])
+    assert rc == 0
+    desc = out / "dataset_description.json"
+    assert desc.exists(), "iproc-app should mark output_dir as a BIDS-Derivatives dataset"
+    data = json.loads(desc.read_text())
+    assert data["DatasetType"] == "derivative"
+    assert data["GeneratedBy"][0]["Name"] == "iproc"
+
+
+def test_dry_run_does_not_write_dataset_description(complete_bids, tmp_path):
+    out = tmp_path / "out"
+    rc = cli.main([str(complete_bids), str(out), "participant", "--dry-run"])
+    assert rc == 0
+    assert not (out / "dataset_description.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # Real (non-dry) participant run WITH --stage: live engine invocation, mocked
 # ---------------------------------------------------------------------------

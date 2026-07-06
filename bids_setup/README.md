@@ -31,7 +31,7 @@ module load uv
 cd $IPROC_CODE
 
 # Single subject
-uv run bids_setup/bids_discover.py $BIDS_ROOT \
+uv run --extra bids bids_setup/bids_discover.py $BIDS_ROOT \
     --output manifest.yaml \
     --skip 7 \
     --smoothing 0 \
@@ -40,7 +40,7 @@ uv run bids_setup/bids_discover.py $BIDS_ROOT \
     --subjects s03
 
 # All subjects
-uv run bids_setup/bids_discover.py $BIDS_ROOT \
+uv run --extra bids bids_setup/bids_discover.py $BIDS_ROOT \
     --output manifest.yaml \
     --skip 7 \
     --smoothing 0 \
@@ -94,7 +94,7 @@ Reads the manifest and creates all configuration files. Also patches BIDS JSON
 sidecars that are missing `SeriesNumber` or `EchoTimeDifference`.
 
 ```bash
-uv run bids_setup/bids_generate.py manifest.yaml \
+uv run --extra bids bids_setup/bids_generate.py manifest.yaml \
     --iproc-dir $IPROC_DIR \
     --codedir $IPROC_CODE
 ```

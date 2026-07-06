@@ -36,6 +36,7 @@ from importlib import metadata
 from pathlib import Path
 
 from iproc.app import config
+from iproc.app.derivatives import write_dataset_description
 from iproc.bids_app import discover, generate
 from iproc.__version__ import __version__ as IPROC_VERSION
 
@@ -291,6 +292,7 @@ def _print_dry_run(args: Namespace, participants: list[str], work_dir: Path) -> 
     print(f"bids_dir:   {args.bids_dir}")
     print(f"output_dir: {args.output_dir}")
     print(f"resolved participants: {', '.join(participants) or '(none)'}")
+    print(f"would write BIDS-Derivatives {args.output_dir}/dataset_description.json")
     for label in participants:
         manifest_out = _manifest_path(work_dir, label)
         print(f"\n--- sub-{label} ---")
@@ -328,6 +330,10 @@ def main(argv=None) -> int:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mark output_dir as a BIDS-Derivatives dataset (dataset_description.json).
+    desc = write_dataset_description(args.output_dir)
+    print(f"wrote {desc}")
 
     for label in participants:
         print(f"\n=== Preparing iProc config for sub-{label} ===")
