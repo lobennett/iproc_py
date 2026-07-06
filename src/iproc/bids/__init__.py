@@ -48,6 +48,13 @@ def _get_layout(bids_base):
     return BIDSLayout(root, validate=False), sub
 
 
+# Sentinel BIDS_ID for a run-less BOLD (a single-run task with no `run-`
+# entity, e.g. MSC's memoryfaces/rest). steps.py globs task-*_bold (no run)
+# when it sees this instead of task-*_run-{ID}_bold. Truthy so it is not
+# treated as a deselected (Analyze=0) scan.
+RUNLESS = "__norun__"
+
+
 def _run_str(fpath):
     """Raw, zero-padding-preserving BIDS run token from the filename (e.g.
     '01', '001'), or None if the file carries no run entity. Downstream
@@ -84,31 +91,35 @@ def match_scan_no_to_bids(bids_base, scans):
 
             bolds = layout.get(subject=sub, session=bids_ses, suffix='bold',
                                extension=['.nii', '.nii.gz'], return_type='file')
-            runs_by_task = col.defaultdict(set)
+            # token per BIDS bold: the run string, or RUNLESS if the file has
+            # no run- entity (single-run tasks). MSC mixes both.
+            toks_by_task = col.defaultdict(set)
             for f in bolds:
                 ent = layout.parse_file_entities(f)
                 task = (ent.get('task') or '').upper()
                 rs = _run_str(f)
-                if rs is not None:
-                    runs_by_task[task].add(rs)
+                toks_by_task[task].add(rs if rs is not None else RUNLESS)
+
+            def _tok_key(t):
+                return (t == RUNLESS, int(t) if t != RUNLESS else 0)
 
             for task_up, rows in rows_by_task.items():
                 rows = sorted(rows, key=lambda s: int(s['BLD']))
-                runs = sorted(runs_by_task.get(task_up, ()), key=int)
-                if len(runs) != len(rows):
+                toks = sorted(toks_by_task.get(task_up, ()), key=_tok_key)
+                if len(toks) != len(rows):
                     logger.warning(
                         "[bids] %s/ses-%s task=%s: %d scanlist row(s) vs %d BIDS "
-                        "run(s); pairing in order", sub, bids_ses, task_up,
-                        len(rows), len(runs))
-                for bs, run in zip(rows, runs):
-                    bs['BIDS_ID'] = str(run)
+                        "file(s); pairing in order", sub, bids_ses, task_up,
+                        len(rows), len(toks))
+                for bs, tok in zip(rows, toks):
+                    bs['BIDS_ID'] = tok
                     bs['FMAP_DIR'] = 'FMAP'
-                if len(rows) > len(runs):
-                    leftover = rows[len(runs):]
+                if len(rows) > len(toks):
+                    leftover = rows[len(toks):]
                     raise IOError(
-                        f"no BIDS bold run for scanlist row(s) task={task_up} "
+                        f"no BIDS bold file for scanlist row(s) task={task_up} "
                         f"BLD={[r['BLD'] for r in leftover]} in ses-{bids_ses} "
-                        f"(sub-{sub}); found runs {runs}")
+                        f"(sub-{sub}); found {sorted(toks)}")
 
         # --- ANAT: resolve from THIS session's own anat (cross-session-safe) ---
         if sess.anat_scans:

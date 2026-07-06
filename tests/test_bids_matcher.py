@@ -23,6 +23,8 @@ def _build_bids(root: Path):
     # inherited, root-level bold sidecar (no per-run sidecars anywhere)
     _touch(root / "task-restingstate_bold.json",
            '{"TaskName":"restingstate","RepetitionTime":2.2}')
+    _touch(root / "task-memory_bold.json",
+           '{"TaskName":"memory","RepetitionTime":2.2}')
     s = root / "sub-01"
     # anat lives in a STRUCT session
     _touch(s / "ses-struct01" / "anat" / "sub-01_ses-struct01_run-01_T1w.nii.gz")
@@ -30,6 +32,8 @@ def _build_bids(root: Path):
     f = s / "ses-func01" / "func"
     _touch(f / "sub-01_ses-func01_task-restingstate_run-01_bold.nii.gz")
     _touch(f / "sub-01_ses-func01_task-restingstate_run-02_bold.nii.gz")
+    # run-less single-run task (no run- entity), as with MSC memoryfaces/rest
+    _touch(f / "sub-01_ses-func01_task-memory_bold.nii.gz")
     m = s / "ses-func01" / "fmap"
     _touch(m / "sub-01_ses-func01_magnitude1.nii.gz")
     _touch(m / "sub-01_ses-func01_magnitude2.nii.gz")
@@ -54,13 +58,15 @@ def _scans(tmp: Path):
         RESOLUTION=222
         """))
     tasktype = tmp / "tasktype.csv"
-    tasktype.write_text("TYPE,TR,SKIP,SMOOTHING,NUMVOL,NUMECHOS\nRESTINGSTATE,2.2,4,6,50,1\n")
+    tasktype.write_text("TYPE,TR,SKIP,SMOOTHING,NUMVOL,NUMECHOS\n"
+                        "RESTINGSTATE,2.2,4,6,50,1\nMEMORY,2.2,4,6,50,1\n")
     scanlist = tmp / "scanlist.csv"
     scanlist.write_text(
         "SUBJID,SESSION_ID,Analyze,BLD,TYPE,ANAT,FMAP_MAG,FMAP_PHASE,FMAP_AP,FMAP_PA,T2,T2_SESSION_ID\n"
         "01,struct01,1,0,ANAT,51,0,0,0,0,0,0\n"
         "01,func01,1,4,RESTINGSTATE,51,2,3,0,0,0,0\n"
         "01,func01,1,5,RESTINGSTATE,51,2,3,0,0,0,0\n"
+        "01,func01,1,6,MEMORY,51,2,3,0,0,0,0\n"
         "01,func01,1,0,FMAP,0,2,3,0,0,0,0\n")
     c = Config(); c.parse(str(cfg))
     s = csvHandler.scansHandler(c)
@@ -84,6 +90,8 @@ def test_matcher_inheritance_cross_session(tmp_path):
     assert func.bold_scans[4]["BIDS_ID"] == "01"
     assert func.bold_scans[5]["BIDS_ID"] == "02"
     assert func.bold_scans[4]["FMAP_DIR"] == "FMAP"
+    # run-less single-run task -> RUNLESS sentinel (steps.py globs task-*_bold)
+    assert func.bold_scans[6]["BIDS_ID"] == ibids.RUNLESS
 
     # cross-session anat: T1 in struct01 gets its own run
     assert struct.anat_scans['51']["BIDS_ID"] == "01"

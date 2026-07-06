@@ -24,7 +24,7 @@ import tempfile
 import datetime
 import collections
 import iproc.commons as commons
-from iproc.bids import sanitize,split_task
+from iproc.bids import sanitize,split_task,RUNLESS
 from pathlib import Path
 
 #get logger from calling script
@@ -168,7 +168,10 @@ class jobConstructor(object):
 
                 if int(numechos) == 1:
 
-                    func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_run-{run}_bold.nii.gz')
+                    if run == RUNLESS:  # single-run task, no run- entity
+                        func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_bold.nii.gz')
+                    else:
+                        func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_run-{run}_bold.nii.gz')
                     bids_func_file = _resolve_unique_bids_file(
                         func_glob,
                         f'BOLD file (case-insensitive task={bids_task_name})',
@@ -212,7 +215,10 @@ class jobConstructor(object):
                 ### ---- MULTI_ECHO!!!!, JS 2025.03.19 ---- ###
                 else:
                     for iEcho in range(1,int(numechos) + 1):
-                        func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_run-{run}_echo-{iEcho}_bold.nii.gz')
+                        if run == RUNLESS:  # single-run task, no run- entity
+                            func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_echo-{iEcho}_bold.nii.gz')
+                        else:
+                            func_glob = os.path.join(func_dir, f'sub-{sanitize(sub)}_ses-{sanitize(ses)}_task-*_run-{run}_echo-{iEcho}_bold.nii.gz')
                         bids_func_file = _resolve_unique_bids_file(
                             func_glob,
                             f'BOLD file (case-insensitive task={bids_task_name}, echo={iEcho})',
