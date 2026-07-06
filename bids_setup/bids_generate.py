@@ -37,6 +37,23 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 
+def _num_key(value: Any):
+    """Sort key that orders numeric-looking labels numerically, others lexically.
+
+    Ensures ses-10 sorts after ses-2 instead of lexically (where "10" < "2").
+    Numeric labels sort before non-numeric ones; both groups are stable.
+    Mirrors bids_discover.py's `_num_key` so session ordering is consistent
+    across both scripts' output and error/gate messages.
+    """
+    if value is None:
+        return (0, 0.0, "")
+    s = str(value)
+    m = re.fullmatch(r"0*(\d+)", s)
+    if m:
+        return (0, float(m.group(1)), "")
+    return (1, 0.0, s)
+
+
 # ---------------------------------------------------------------------------
 # Generate tasktype_consolidated.csv
 # ---------------------------------------------------------------------------
@@ -68,6 +85,31 @@ def generate_tasktype_csv(tasks: dict, output_path: Path) -> None:
 # Patch JSON sidecars
 # ---------------------------------------------------------------------------
 
+_SKIP_SIDECAR = object()  # sentinel: sidecar exists but is unreadable/malformed
+
+
+def _load_sidecar(json_path: Path):
+    """Load an existing JSON sidecar.
+
+    Returns ``{}`` if the sidecar doesn't exist yet (nothing to preserve).
+    Returns the sentinel ``_SKIP_SIDECAR`` if the sidecar exists but is not
+    valid JSON (or can't be read) — the caller must skip patching THAT one
+    sidecar rather than let a single corrupt file abort the whole generation
+    run partway through (after some other files have already been written).
+    """
+    if not json_path.exists():
+        return {}
+    try:
+        with open(json_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        log.warning(
+            "Malformed JSON sidecar, skipping patch for this file: %s (%s)",
+            json_path, exc,
+        )
+        return _SKIP_SIDECAR
+
+
 def patch_json_sidecars(
     bids_root: Path,
     sub_data: dict,
@@ -89,10 +131,9 @@ def patch_json_sidecars(
             nii_path = bids_root / fmap["file"]
             json_path = nii_path.parent / nii_path.name.replace(".nii.gz", ".json")
 
-            existing = {}
-            if json_path.exists():
-                with open(json_path) as f:
-                    existing = json.load(f)
+            existing = _load_sidecar(json_path)
+            if existing is _SKIP_SIDECAR:
+                continue
 
             needs_write = False
             if "SeriesNumber" not in existing:
@@ -110,10 +151,9 @@ def patch_json_sidecars(
             nii_path = bids_root / fmap["file"]
             json_path = nii_path.parent / nii_path.name.replace(".nii.gz", ".json")
 
-            existing = {}
-            if json_path.exists():
-                with open(json_path) as f:
-                    existing = json.load(f)
+            existing = _load_sidecar(json_path)
+            if existing is _SKIP_SIDECAR:
+                continue
 
             needs_write = False
             if "SeriesNumber" not in existing:
@@ -141,10 +181,9 @@ def patch_json_sidecars(
             nii_path = bids_root / anat["file"]
             json_path = nii_path.parent / nii_path.name.replace(".nii.gz", ".json")
 
-            existing = {}
-            if json_path.exists():
-                with open(json_path) as f:
-                    existing = json.load(f)
+            existing = _load_sidecar(json_path)
+            if existing is _SKIP_SIDECAR:
+                continue
 
             needs_write = False
             if "SeriesNumber" not in existing:
@@ -196,7 +235,7 @@ def session_has_fieldmap(ses_data: dict) -> bool:
 def bold_runs_without_fieldmap(sub_data: dict) -> list[tuple[str, dict]]:
     """List (session_label, bold) for BOLD runs whose own session lacks a fmap."""
     missing = []
-    for ses_label in sorted(sub_data["sessions"].keys()):
+    for ses_label in sorted(sub_data["sessions"].keys(), key=_num_key):
         ses_data = sub_data["sessions"][ses_label]
         if session_has_fieldmap(ses_data):
             continue
@@ -230,7 +269,7 @@ def generate_scanlist_csv(
         base.update(kw)
         return base
 
-    for ses_label in sorted(sessions.keys()):
+    for ses_label in sorted(sessions.keys(), key=_num_key):
         ses_data = sessions[ses_label]
         bolds = ses_data["bold"]
         anats = ses_data["anat"]

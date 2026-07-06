@@ -306,6 +306,123 @@ def test_direct_regime_refused(tmp_path):
     assert not list(gen.rglob("*.cfg"))
 
 
+def test_patch_json_sidecars_only_fills_missing_preserves_existing(tmp_path):
+    """patch_json_sidecars must only add MISSING fields to an existing sidecar
+    and must not overwrite or drop fields already present (review M5,
+    idempotency)."""
+    ds = tmp_path / "ds"
+    s = ds / "sub-01" / "ses-01"
+    (s / "anat").mkdir(parents=True); (s / "func").mkdir(); (s / "fmap").mkdir()
+    (s / "anat" / "sub-01_ses-01_T1w.nii.gz").write_bytes(b"")
+    (s / "func" / "sub-01_ses-01_task-rest_bold.nii.gz").write_bytes(b"")
+    _write_json(s / "func" / "sub-01_ses-01_task-rest_bold.json", {"RepetitionTime": 2.0})
+    (s / "fmap" / "sub-01_ses-01_magnitude1.nii.gz").write_bytes(b"")
+    (s / "fmap" / "sub-01_ses-01_phasediff.nii.gz").write_bytes(b"")
+    phase_json = s / "fmap" / "sub-01_ses-01_phasediff.json"
+    # Manufacturer + EchoTimeDifference already present (must NOT be touched);
+    # CustomField is an arbitrary pre-existing field (must be preserved);
+    # SeriesNumber is absent (must be the ONLY field filled in).
+    _write_json(phase_json, {
+        "Manufacturer": "Siemens",
+        "EchoTimeDifference": 0.00246,
+        "CustomField": "keep-me",
+    })
+
+    man = tmp_path / "m.yaml"
+    assert _run("bids_discover.py", ds, "--output", man).returncode == 0
+
+    gen = tmp_path / "gen"
+    r = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO)
+    assert r.returncode == 0, r.stderr
+
+    patched = json.loads(phase_json.read_text())
+    assert patched["Manufacturer"] == "Siemens"
+    assert patched["EchoTimeDifference"] == 0.00246
+    assert patched["CustomField"] == "keep-me"
+    assert "SeriesNumber" in patched  # the one missing field, now filled
+
+    # Idempotent: re-running generate against the now-fully-populated sidecar
+    # patches nothing further and leaves its content byte-for-byte equivalent.
+    gen2 = tmp_path / "gen2"
+    r2 = _run("bids_generate.py", man, "--iproc-dir", gen2, "--codedir", REPO)
+    assert r2.returncode == 0, r2.stderr
+    assert "Patched" not in r2.stderr
+    assert json.loads(phase_json.read_text()) == patched
+
+
+def test_patch_json_sidecars_corrupt_sidecar_warns_and_continues(tmp_path):
+    """A malformed JSON sidecar must not abort the whole generate run: it
+    should warn, skip patching just that one sidecar, and continue (review
+    M5)."""
+    ds = tmp_path / "ds"
+    s = ds / "sub-01" / "ses-01"
+    (s / "anat").mkdir(parents=True); (s / "func").mkdir(); (s / "fmap").mkdir()
+    (s / "anat" / "sub-01_ses-01_T1w.nii.gz").write_bytes(b"")
+    (s / "func" / "sub-01_ses-01_task-rest_bold.nii.gz").write_bytes(b"")
+    _write_json(s / "func" / "sub-01_ses-01_task-rest_bold.json", {"RepetitionTime": 2.0})
+    (s / "fmap" / "sub-01_ses-01_magnitude1.nii.gz").write_bytes(b"")
+    (s / "fmap" / "sub-01_ses-01_phasediff.nii.gz").write_bytes(b"")
+    phase_json = s / "fmap" / "sub-01_ses-01_phasediff.json"
+    _write_json(phase_json, {"Manufacturer": "Siemens", "EchoTimeDifference": 0.00246})
+
+    man = tmp_path / "m.yaml"
+    assert _run("bids_discover.py", ds, "--output", man).returncode == 0
+
+    # Corrupt the sidecar AFTER discovery (discovery already captured the
+    # metadata it needed into the manifest) to simulate an externally-edited
+    # or truncated sidecar at generate time.
+    phase_json.write_text("{not valid json,,,")
+    anat_json = s / "anat" / "sub-01_ses-01_T1w.json"
+    assert not anat_json.exists()
+
+    gen = tmp_path / "gen"
+    r = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO)
+    assert r.returncode == 0, r.stderr  # one bad sidecar must not abort the run
+    assert "WARNING" in r.stderr
+    assert "phasediff.json" in r.stderr
+
+    # The corrupt file is left exactly as-is (not overwritten with a fresh,
+    # data-losing patch).
+    assert phase_json.read_text() == "{not valid json,,,"
+
+    # The rest of generation still completed: the T1w sidecar (a different
+    # file) still got patched, and the scanlist/cfg were still written.
+    assert anat_json.exists()
+    assert json.loads(anat_json.read_text()).get("SeriesNumber")
+    assert list(gen.rglob("*.cfg"))
+    assert list(gen.rglob("scanlist_*.csv"))
+
+
+def test_no_fieldmap_gate_lists_sessions_numerically(tmp_path):
+    """Sessions ses-2 and ses-10 must be listed in NUMERIC order (ses-2 before
+    ses-10) in the no-fieldmap gate error message, not lexical order (which
+    would sort "10" before "2")."""
+    ds = tmp_path / "ds"
+    for ses in ("2", "10"):
+        s = ds / "sub-01" / f"ses-{ses}" / "func"
+        s.mkdir(parents=True)
+        name = f"sub-01_ses-{ses}_task-rest_bold.nii.gz"
+        (s / name).write_bytes(b"")
+        _write_json(s / name.replace(".nii.gz", ".json"), {"RepetitionTime": 2.0})
+    # anat in ses-2 so the missing-anat gate doesn't fire before the
+    # no-fieldmap gate we're actually testing.
+    anat_dir = ds / "sub-01" / "ses-2" / "anat"
+    anat_dir.mkdir()
+    (anat_dir / "sub-01_ses-2_T1w.nii.gz").write_bytes(b"")
+
+    man = tmp_path / "m.yaml"
+    assert _run("bids_discover.py", ds, "--output", man).returncode == 0
+
+    gen = tmp_path / "gen"
+    r = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO)
+    assert r.returncode != 0, "expected block: neither session has a fieldmap"
+
+    pos2 = r.stderr.find("ses-2 ")
+    pos10 = r.stderr.find("ses-10 ")
+    assert pos2 != -1 and pos10 != -1, r.stderr
+    assert pos2 < pos10, f"expected ses-2 listed before ses-10:\n{r.stderr}"
+
+
 def test_missing_tr_warns(tmp_path):
     """A task whose BOLD lacks RepetitionTime must warn loudly on generate."""
     ds = tmp_path / "ds"
