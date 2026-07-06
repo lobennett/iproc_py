@@ -36,8 +36,13 @@ NEUTRAL_FROM_FORK = [
 # Files with our own edits (compared explicitly, not to a baseline).
 # runscript/fmap_from_bids.py adds a GE/Philips Hz→rad/s branch (capability
 # upstream lacks); its Siemens/Varian path is byte-behavior-identical to
-# upstream. See NOTICE.md / docs/fork-audit.md.
-OURS = {"cli/iproc.py", "steps.py", "runscript/fmap_from_bids.py"}
+# upstream. bids/__init__.py (match_scan_no_to_bids) makes per-session modality
+# globs conditional so a session missing a modality (e.g. cross-session anat:
+# T1 in ses-struct*, BOLD/fmap in ses-func*) no longer raises IOError;
+# behavior-preserving for same-session datasets. See NOTICE.md /
+# docs/fork-audit.md.
+OURS = {"cli/iproc.py", "steps.py", "runscript/fmap_from_bids.py",
+        "bids/__init__.py"}
 
 def _iter_upstream_core():
     for f in (UP / "iproc").rglob("*"):

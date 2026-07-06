@@ -506,3 +506,172 @@ def test_series_number_in_sidecars_does_not_break_pipeline(tmp_path):
     assert r_gen.returncode == 0, r_gen.stderr
     assert next(gen.rglob("scanlist_*.csv")).exists()
     assert next(gen.rglob("*.cfg")).exists()
+
+
+# ---------------------------------------------------------------------------
+# Cross-session anat (MSC-style): T1 in ses-struct*, BOLD/fmap in ses-func*
+# ---------------------------------------------------------------------------
+
+def _build_cross_session_ds(tmp_path):
+    """T1 lives in ses-struct01/anat; BOLD+fmap live in ses-func01."""
+    ds = tmp_path / "ds"
+    st = ds / "sub-MSC01" / "ses-struct01" / "anat"
+    st.mkdir(parents=True)
+    (st / "sub-MSC01_ses-struct01_run-01_T1w.nii.gz").write_bytes(b"")
+    _write_json(st / "sub-MSC01_ses-struct01_run-01_T1w.json",
+                {"SeriesNumber": 52, "Manufacturer": "Siemens"})
+
+    fu = ds / "sub-MSC01" / "ses-func01"
+    (fu / "func").mkdir(parents=True)
+    (fu / "fmap").mkdir()
+    (fu / "func" / "sub-MSC01_ses-func01_task-rest_run-01_bold.nii.gz").write_bytes(b"")
+    _write_json(fu / "func" / "sub-MSC01_ses-func01_task-rest_run-01_bold.json",
+                {"SeriesNumber": 9, "RepetitionTime": 2.0})
+    (fu / "fmap" / "sub-MSC01_ses-func01_magnitude1.nii.gz").write_bytes(b"")
+    _write_json(fu / "fmap" / "sub-MSC01_ses-func01_magnitude1.json",
+                {"SeriesNumber": 6})
+    (fu / "fmap" / "sub-MSC01_ses-func01_phasediff.nii.gz").write_bytes(b"")
+    _write_json(fu / "fmap" / "sub-MSC01_ses-func01_phasediff.json",
+                {"SeriesNumber": 7, "Manufacturer": "Siemens",
+                 "EchoTimeDifference": 0.00246})
+    return ds
+
+
+def test_cross_session_anat_generate_emits_anat_row_and_broadcasts(tmp_path):
+    """MSC-style dataset (T1 in ses-struct01, BOLD/fmap in ses-func01):
+
+    the generated scanlist must have a TYPE=ANAT row under struct01 carrying
+    the T1's series number, AND the func01 BOLD row must carry that same T1
+    series number in its ANAT column (the cross-session link).
+    """
+    ds = _build_cross_session_ds(tmp_path)
+
+    man = tmp_path / "m.yaml"
+    assert _run("bids_discover.py", ds, "--output", man).returncode == 0
+
+    gen = tmp_path / "gen"
+    r = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO)
+    assert r.returncode == 0, r.stderr
+
+    import csv
+    scan = next(gen.rglob("scanlist_*.csv"))
+    with open(scan) as f:
+        rows = list(csv.DictReader(f))
+
+    # An ANAT-type row exists, is under struct01, selected, and carries the T1
+    # series number in the ANAT column.
+    anat_rows = [r for r in rows if r["TYPE"] == "ANAT"]
+    assert len(anat_rows) == 1, rows
+    anat = anat_rows[0]
+    assert anat["SESSION_ID"] == "struct01"
+    assert anat["Analyze"] == "1"
+    assert anat["ANAT"] == "52"
+
+    # The func01 BOLD row references the struct01 T1 by series number.
+    bold = next(r for r in rows if r["TYPE"] == "REST")
+    assert bold["SESSION_ID"] == "func01"
+    assert bold["ANAT"] == "52"
+    assert bold["Analyze"] == "1"
+
+    # The cfg points T1_SESS at the struct session.
+    cfg = next(gen.rglob("*.cfg")).read_text()
+    assert "T1_SESS=struct01" in cfg
+
+
+def test_same_session_generate_unchanged(tmp_path):
+    """Regression: when the T1 shares the BOLD's session, the scanlist has the
+    ANAT row under that single session and the BOLD row references it — the
+    same-session case must not change."""
+    ds = tmp_path / "ds"
+    s = ds / "sub-01" / "ses-01"
+    (s / "anat").mkdir(parents=True); (s / "func").mkdir(); (s / "fmap").mkdir()
+    (s / "anat" / "sub-01_ses-01_run-01_T1w.nii.gz").write_bytes(b"")
+    _write_json(s / "anat" / "sub-01_ses-01_run-01_T1w.json", {"SeriesNumber": 5})
+    (s / "func" / "sub-01_ses-01_task-rest_bold.nii.gz").write_bytes(b"")
+    _write_json(s / "func" / "sub-01_ses-01_task-rest_bold.json",
+                {"SeriesNumber": 9, "RepetitionTime": 2.0})
+    (s / "fmap" / "sub-01_ses-01_magnitude1.nii.gz").write_bytes(b"")
+    _write_json(s / "fmap" / "sub-01_ses-01_magnitude1.json", {"SeriesNumber": 2})
+    (s / "fmap" / "sub-01_ses-01_phasediff.nii.gz").write_bytes(b"")
+    _write_json(s / "fmap" / "sub-01_ses-01_phasediff.json",
+                {"SeriesNumber": 3, "Manufacturer": "Siemens",
+                 "EchoTimeDifference": 0.00246})
+
+    man = tmp_path / "m.yaml"
+    assert _run("bids_discover.py", ds, "--output", man).returncode == 0
+    gen = tmp_path / "gen"
+    r = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO)
+    assert r.returncode == 0, r.stderr
+
+    import csv
+    with open(next(gen.rglob("scanlist_*.csv"))) as f:
+        rows = list(csv.DictReader(f))
+    anat = next(r for r in rows if r["TYPE"] == "ANAT")
+    bold = next(r for r in rows if r["TYPE"] == "REST")
+    assert anat["SESSION_ID"] == "01" and bold["SESSION_ID"] == "01"
+    assert anat["ANAT"] == "5" and bold["ANAT"] == "5"
+
+
+def test_match_scan_no_to_bids_cross_session_no_crash(tmp_path):
+    """iproc.bids.match_scan_no_to_bids must NOT crash when a session lacks a
+    modality: a func session (no anat/) and a struct session (no func/, no
+    fmap/) must each be handled, and the struct session's anat must receive
+    its BIDS_ID from its OWN anat/ dir.
+    """
+    from iproc.config import Config
+    from iproc import csvHandler
+    from iproc.bids import match_scan_no_to_bids
+
+    # --- BIDS tree: T1 in ses-struct01, BOLD+fmap in ses-func01 ---
+    bids = tmp_path / "bids"
+    st = bids / "ses-struct01" / "anat"; st.mkdir(parents=True)
+    (st / "sub-MSC01_ses-struct01_run-01_T1w.nii.gz").write_bytes(b"")
+    _write_json(st / "sub-MSC01_ses-struct01_run-01_T1w.json", {"SeriesNumber": 52})
+
+    fu = bids / "ses-func01"
+    (fu / "func").mkdir(parents=True); (fu / "fmap").mkdir()
+    (fu / "func" / "sub-MSC01_ses-func01_task-rest_run-01_bold.nii.gz").write_bytes(b"")
+    _write_json(fu / "func" / "sub-MSC01_ses-func01_task-rest_run-01_bold.json",
+                {"SeriesNumber": 9})
+    (fu / "fmap" / "sub-MSC01_ses-func01_magnitude1.nii.gz").write_bytes(b"")
+    _write_json(fu / "fmap" / "sub-MSC01_ses-func01_magnitude1.json", {"SeriesNumber": 6})
+    (fu / "fmap" / "sub-MSC01_ses-func01_phasediff.nii.gz").write_bytes(b"")
+    _write_json(fu / "fmap" / "sub-MSC01_ses-func01_phasediff.json", {"SeriesNumber": 7})
+
+    # --- task + scanlist CSVs ---
+    task_csv = tmp_path / "task.csv"
+    task_csv.write_text("TYPE,TR,SKIP,SMOOTHING,NUMVOL,NUMECHOS\nREST,2.0,4,6,100,1\n")
+    scan_csv = tmp_path / "scanlist.csv"
+    scan_csv.write_text(
+        "SUBJID,SESSION_ID,Analyze,BLD,TYPE,ANAT,FMAP_MAG,FMAP_PHASE,FMAP_AP,FMAP_PA,T2,T2_SESSION_ID\n"
+        "MSC01,struct01,1,0,ANAT,52,0,0,0,0,0,0\n"
+        "MSC01,func01,1,9,REST,52,6,7,0,0,0,0\n"
+        "MSC01,func01,1,0,FMAP,0,6,7,0,0,0,0\n"
+    )
+
+    cfg = tmp_path / "m.cfg"
+    cfg.write_text(
+        "[iproc]\nSUB=MSC01\nBASEDIR=/tmp/x\nOUTDIR=${basedir}/mri_data\n"
+        "MASKSDIR=${basedir}/mni_masks\n"
+        "[template]\nMIDVOL_SESS=func01\nMIDVOL_BOLDNO=009\nMIDVOL_VOLNO=50\n"
+        "FD_THRESH=0.4\nFD_LABEL=0p4\n"
+        "[fmap]\nPREPTOOL=fsl_prepare_fieldmap\n"
+        "[csv]\nSCANLIST=${iproc:outdir}/${iproc:sub}/scanlist.csv\n"
+        "[out_atlas]\nRESOLUTION=222\n"
+    )
+
+    conf = Config(); conf.parse(str(cfg))
+    scans = csvHandler.scansHandler(conf)
+    scans.ingest_task_csv(str(task_csv))
+    scans.ingest_bold_csv(str(scan_csv))
+
+    # Must not raise (upstream raised IOError on the func session's missing anat/).
+    match_scan_no_to_bids(str(bids), scans)
+
+    # struct01's anat got its BIDS_ID from its own anat/ dir.
+    struct = scans.scan_by_session["struct01"]
+    assert struct.anat_scans["52"]["BIDS_ID"] == "01"
+    # func01's BOLD got its BIDS_ID and links the anat by series number.
+    func = scans.scan_by_session["func01"]
+    assert func.bold_scans[9]["BIDS_ID"] == "01"
+    assert func.bold_scans[9]["ANAT"] == "52"

@@ -9,112 +9,134 @@ import iproc.commons as commons
 logger = logging.getLogger(__name__)
 
 def match_scan_no_to_bids(bids_base,scans):
-    for sessionid,sess in scans.sessions():
+    # DEVIATION FROM UPSTREAM (cross-session-anat support): iterate over EVERY
+    # session, not just BOLD sessions, and glob each modality's JSON sidecars
+    # only when the session actually carries scans of that modality. Upstream
+    # iterated scans.sessions() (BOLD-only) and unconditionally globbed
+    # func/fmap/anat, raising IOError for any session missing a modality dir.
+    # That crashes datasets whose T1w lives in a different session than the
+    # BOLD/fmap (e.g. MSC: T1 in ses-struct*, BOLD/fmap in ses-func*): the
+    # struct session (no BOLD) was never visited so its anat never got a
+    # BIDS_ID, and each func session (no anat/) crashed on the anat glob.
+    # For same-session datasets every session has all three modalities, so
+    # every glob still runs exactly as before and behavior is unchanged.
+    for sessionid,sess in scans.scan_by_session.items():
+        # Set handler state the way scans.sessions() would, so scans.tasks()
+        # and scans.fieldmaps() below operate on THIS session.
+        scans.sessionid = sessionid
+        scans.sess = sess
         #set corresponding BIDS subdir
         bids_sessionid = sanitize(sessionid)
         bids_sessionid_dirname = f'ses-{bids_sessionid}'
-        # take care of fmap
-        # compile list of SeriesNumber:(task,run)
-        bids_func_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'func')
-        bids_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_bold.json'
-        bids_json_glob = os.path.join(bids_func_fullpath,bids_json_fglob)
         scan_no_to_json = {}
-        for json in glob.glob(bids_json_glob):
-            # get series number from json, save in dict for later
+        dirSpec = 0
+        ME = 0
+        # take care of func: only glob/require when this session has BOLD scans
+        # compile list of SeriesNumber:(task,run)
+        if sess.bold_scans:
+            bids_func_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'func')
+            bids_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_bold.json'
+            bids_json_glob = os.path.join(bids_func_fullpath,bids_json_fglob)
+            for json in glob.glob(bids_json_glob):
+                # get series number from json, save in dict for later
 
-            #try for single echo with direction:
-            json_regex_dir = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_dir-(\w+)_run-([0-9]+)_bold.json'
-            bids_pair_tmp_dir = re.match(json_regex_dir,json)
+                #try for single echo with direction:
+                json_regex_dir = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_dir-(\w+)_run-([0-9]+)_bold.json'
+                bids_pair_tmp_dir = re.match(json_regex_dir,json)
 
-            #try for single echo with direction:
-            json_regex = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_run-([0-9]+)_bold.json'
-            bids_pair_tmp = re.match(json_regex,json)
+                #try for single echo with direction:
+                json_regex = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_run-([0-9]+)_bold.json'
+                bids_pair_tmp = re.match(json_regex,json)
 
-            #try for single echo with direction:
-            json_regex_dir_me = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_dir-(\w+)_run-([0-9]+)_echo-([0-9]+)_bold.json'
-            bids_pair_tmp_dir_me = re.match(json_regex_dir_me,json)
+                #try for single echo with direction:
+                json_regex_dir_me = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_dir-(\w+)_run-([0-9]+)_echo-([0-9]+)_bold.json'
+                bids_pair_tmp_dir_me = re.match(json_regex_dir_me,json)
 
-            #try for single echo with direction:
-            json_regex_me = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_run-([0-9]+)_echo-([0-9]+)_bold.json'
-            bids_pair_tmp_me = re.match(json_regex_me,json)
+                #try for single echo with direction:
+                json_regex_me = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_run-([0-9]+)_echo-([0-9]+)_bold.json'
+                bids_pair_tmp_me = re.match(json_regex_me,json)
 
 
-            if bids_pair_tmp != None:
-                bids_pair = bids_pair_tmp.groups()
-                dirSpec = 0 # set to 0 if direction is NOT specified in file name
-                ME = 0 # set to 0 if single echo
-            elif bids_pair_tmp_dir != None:
-                bids_pair = bids_pair_tmp_dir.groups()
-                dirSpec = 1 #set to 1 if direction is specified in file name
-                ME = 0 
-            elif bids_pair_tmp_me != None:
-                bids_pair = bids_pair_tmp_me.groups()
-                dirSpec = 0 
-                ME = 1 # set to 1 if multi-echo
-            elif bids_pair_tmp_dir_me != None:
-                bids_pair = bids_pair_tmp_dir_me.groups()
-                dirSpec = 1
-                ME = 1 
-                
-            series_no = get_json_entity(json,'SeriesNumber')
-            scan_no_to_json[series_no]=bids_pair
+                if bids_pair_tmp != None:
+                    bids_pair = bids_pair_tmp.groups()
+                    dirSpec = 0 # set to 0 if direction is NOT specified in file name
+                    ME = 0 # set to 0 if single echo
+                elif bids_pair_tmp_dir != None:
+                    bids_pair = bids_pair_tmp_dir.groups()
+                    dirSpec = 1 #set to 1 if direction is specified in file name
+                    ME = 0
+                elif bids_pair_tmp_me != None:
+                    bids_pair = bids_pair_tmp_me.groups()
+                    dirSpec = 0
+                    ME = 1 # set to 1 if multi-echo
+                elif bids_pair_tmp_dir_me != None:
+                    bids_pair = bids_pair_tmp_dir_me.groups()
+                    dirSpec = 1
+                    ME = 1
+
+                series_no = get_json_entity(json,'SeriesNumber')
+                scan_no_to_json[series_no]=bids_pair
 
         # Compile list of phase_SeriesNumber:BIDS_run_no
-        bids_fmap_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'fmap')
-        bids_json_fglob = '*.json'.format(SUB=sess.subjid,SES=bids_sessionid)
-        bids_json_glob = os.path.join(bids_fmap_fullpath,bids_json_fglob)
-
-        fmap_jsons = glob.glob(bids_json_glob)
-        if not fmap_jsons:
-            logger.error(f'no JSON file found for {bids_json_glob}')
-            raise IOError
-
+        # only glob/require fmap JSONs when this session has fieldmap scans
         fmap_no_to_nifti = {}
-        for json_fname in fmap_jsons:
-            # get filenames by aquisition number
-            series_no = get_json_entity(json_fname,'SeriesNumber')
-                
-            nifti_filename = json_fname.rstrip('.json') + '.nii.gz'
-            if not os.path.exists(nifti_filename):
-                raise ValueError
-            existing_fmap = fmap_no_to_nifti.get(series_no)
-            logger.debug(f'{existing_fmap} {json_fname} {series_no}')
-            if not existing_fmap:
-                fmap_no_to_nifti[series_no] = nifti_filename 
-            elif type(existing_fmap) == str:
-                fmap_no_to_nifti[series_no] = [existing_fmap,nifti_filename]
-            else:
-                fmap_no_to_nifti[series_no].append(nifti_filename)
+        if sess.fmap_scans:
+            bids_fmap_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'fmap')
+            bids_json_fglob = '*.json'.format(SUB=sess.subjid,SES=bids_sessionid)
+            bids_json_glob = os.path.join(bids_fmap_fullpath,bids_json_fglob)
+
+            fmap_jsons = glob.glob(bids_json_glob)
+            if not fmap_jsons:
+                logger.error(f'no JSON file found for {bids_json_glob}')
+                raise IOError
+
+            for json_fname in fmap_jsons:
+                # get filenames by aquisition number
+                series_no = get_json_entity(json_fname,'SeriesNumber')
+
+                nifti_filename = json_fname.rstrip('.json') + '.nii.gz'
+                if not os.path.exists(nifti_filename):
+                    raise ValueError
+                existing_fmap = fmap_no_to_nifti.get(series_no)
+                logger.debug(f'{existing_fmap} {json_fname} {series_no}')
+                if not existing_fmap:
+                    fmap_no_to_nifti[series_no] = nifti_filename
+                elif type(existing_fmap) == str:
+                    fmap_no_to_nifti[series_no] = [existing_fmap,nifti_filename]
+                else:
+                    fmap_no_to_nifti[series_no].append(nifti_filename)
 
         # Compile list of anat_SeriesNumber:BIDS_run_no
-        bids_anat_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'anat')
-        bids_T1_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_T1w.json'
-        bids_T2_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_T2w.json'
-        bids_T1_json_glob = os.path.join(bids_anat_fullpath,bids_T1_json_fglob)
-        bids_T2_json_glob = os.path.join(bids_anat_fullpath,bids_T2_json_fglob)
-        anat_no_to_json = {}     
-        anat_jsons = glob.glob(bids_T1_json_glob) + glob.glob(bids_T2_json_glob)
-        if not anat_jsons:
-            logger.error(f'no JSON file found for {bids_json_glob}')
-            raise IOError
-        for json in anat_jsons:
-            # get series number for T1w anat from json, save in dict for later
-            anat_regex = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_run-([0-9]+)_(T1w|T2w).json'
-            anat_match = re.match(anat_regex,json)
-            run_no = anat_match.group(1)
-            series_no = get_json_entity(anat_match.string,'SeriesNumber')
-            anat_no_to_json[series_no]=run_no
-            print(anat_no_to_json)
-            print(sess.anat_scans)
-        try:
-            for scan_no,anat_scan in iter(sess.anat_scans.items()):
-                anat_scan['BIDS_ID'] = anat_no_to_json[scan_no]
-        except KeyError as e:
-            logger.debug('anat_no_to_json:')
-            logger.debug(anat_no_to_json)
-            logger.debug('anat_scan:')
-            logger.debug(anat_scan)
-            raise e
+        # only glob/require anat JSONs when this session has anat scans. The
+        # anat scan gets its BIDS_ID from ITS OWN session's anat/ dir — BOLD
+        # scans link to it by series number (cross-session-safe).
+        anat_no_to_json = {}
+        if sess.anat_scans:
+            bids_anat_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'anat')
+            bids_T1_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_T1w.json'
+            bids_T2_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_T2w.json'
+            bids_T1_json_glob = os.path.join(bids_anat_fullpath,bids_T1_json_fglob)
+            bids_T2_json_glob = os.path.join(bids_anat_fullpath,bids_T2_json_fglob)
+            anat_jsons = glob.glob(bids_T1_json_glob) + glob.glob(bids_T2_json_glob)
+            if not anat_jsons:
+                logger.error(f'no JSON file found for {bids_anat_fullpath}')
+                raise IOError
+            for json in anat_jsons:
+                # get series number for T1w anat from json, save in dict for later
+                anat_regex = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_run-([0-9]+)_(T1w|T2w).json'
+                anat_match = re.match(anat_regex,json)
+                run_no = anat_match.group(1)
+                series_no = get_json_entity(anat_match.string,'SeriesNumber')
+                anat_no_to_json[series_no]=run_no
+            try:
+                for scan_no,anat_scan in iter(sess.anat_scans.items()):
+                    anat_scan['BIDS_ID'] = anat_no_to_json[scan_no]
+            except KeyError as e:
+                logger.debug('anat_no_to_json:')
+                logger.debug(anat_no_to_json)
+                logger.debug('anat_scan:')
+                logger.debug(anat_scan)
+                raise e
 
         ## Add this info into bold_scan objects
         for task_name,bold_scan in scans.tasks():
