@@ -8,220 +8,178 @@ import collections as col
 import iproc.commons as commons
 logger = logging.getLogger(__name__)
 
-def match_scan_no_to_bids(bids_base,scans):
-    # DEVIATION FROM UPSTREAM (cross-session-anat support): iterate over EVERY
-    # session, not just BOLD sessions, and glob each modality's JSON sidecars
-    # only when the session actually carries scans of that modality. Upstream
-    # iterated scans.sessions() (BOLD-only) and unconditionally globbed
-    # func/fmap/anat, raising IOError for any session missing a modality dir.
-    # That crashes datasets whose T1w lives in a different session than the
-    # BOLD/fmap (e.g. MSC: T1 in ses-struct*, BOLD/fmap in ses-func*): the
-    # struct session (no BOLD) was never visited so its anat never got a
-    # BIDS_ID, and each func session (no anat/) crashed on the anat glob.
-    # For same-session datasets every session has all three modalities, so
-    # every glob still runs exactly as before and behavior is unchanged.
-    for sessionid,sess in scans.scan_by_session.items():
-        # Set handler state the way scans.sessions() would, so scans.tasks()
-        # and scans.fieldmaps() below operate on THIS session.
-        scans.sessionid = sessionid
-        scans.sess = sess
-        #set corresponding BIDS subdir
-        bids_sessionid = sanitize(sessionid)
-        bids_sessionid_dirname = f'ses-{bids_sessionid}'
-        scan_no_to_json = {}
-        dirSpec = 0
-        ME = 0
-        # take care of func: only glob/require when this session has BOLD scans
-        # compile list of SeriesNumber:(task,run)
-        if sess.bold_scans:
-            bids_func_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'func')
-            bids_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_bold.json'
-            bids_json_glob = os.path.join(bids_func_fullpath,bids_json_fglob)
-            for json in glob.glob(bids_json_glob):
-                # get series number from json, save in dict for later
 
-                #try for single echo with direction:
-                json_regex_dir = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_dir-(\w+)_run-([0-9]+)_bold.json'
-                bids_pair_tmp_dir = re.match(json_regex_dir,json)
-
-                #try for single echo with direction:
-                json_regex = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_run-([0-9]+)_bold.json'
-                bids_pair_tmp = re.match(json_regex,json)
-
-                #try for single echo with direction:
-                json_regex_dir_me = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_dir-(\w+)_run-([0-9]+)_echo-([0-9]+)_bold.json'
-                bids_pair_tmp_dir_me = re.match(json_regex_dir_me,json)
-
-                #try for single echo with direction:
-                json_regex_me = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_task-(\w+)_run-([0-9]+)_echo-([0-9]+)_bold.json'
-                bids_pair_tmp_me = re.match(json_regex_me,json)
+# DEVIATION FROM UPSTREAM (documented in docs/fork-audit.md / NOTICE.md).
+# Upstream's match_scan_no_to_bids matched scanlist rows to BIDS files by
+# globbing per-run JSON sidecars and reading their `SeriesNumber`. That fails
+# on datasets that use BIDS *inheritance* — no per-run sidecars, metadata in
+# root-level task-*_bold.json / phasediff.json (e.g. MSC, many OpenNeuro
+# datasets, and read-only trees where sidecars can't be patched in). This
+# rewrite uses pybids: it enumerates BOLD/anat/fmap NIfTIs and their BIDS
+# entities (inheritance-resolved), and maps each scanlist row to a BIDS `run`
+# by (session, task, order) rather than by SeriesNumber. `run` is the canonical
+# BIDS identifier, so for datasets that DO carry sidecars this produces the same
+# BIDS_ID the SeriesNumber path did. Also handles cross-session anat (T1 in a
+# different session than BOLD/fmap): each modality is resolved from its own
+# session, and per-session modality handling is conditional (a session missing
+# a modality is skipped, not an error).
 
 
-                if bids_pair_tmp != None:
-                    bids_pair = bids_pair_tmp.groups()
-                    dirSpec = 0 # set to 0 if direction is NOT specified in file name
-                    ME = 0 # set to 0 if single echo
-                elif bids_pair_tmp_dir != None:
-                    bids_pair = bids_pair_tmp_dir.groups()
-                    dirSpec = 1 #set to 1 if direction is specified in file name
-                    ME = 0
-                elif bids_pair_tmp_me != None:
-                    bids_pair = bids_pair_tmp_me.groups()
-                    dirSpec = 0
-                    ME = 1 # set to 1 if multi-echo
-                elif bids_pair_tmp_dir_me != None:
-                    bids_pair = bids_pair_tmp_dir_me.groups()
-                    dirSpec = 1
-                    ME = 1
+def _get_layout(bids_base):
+    """Build a BIDSLayout from the dataset root and return (layout, sub_label).
 
-                series_no = get_json_entity(json,'SeriesNumber')
-                scan_no_to_json[series_no]=bids_pair
-
-        # Compile list of phase_SeriesNumber:BIDS_run_no
-        # only glob/require fmap JSONs when this session has fieldmap scans
-        fmap_no_to_nifti = {}
-        if sess.fmap_scans:
-            bids_fmap_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'fmap')
-            bids_json_fglob = '*.json'.format(SUB=sess.subjid,SES=bids_sessionid)
-            bids_json_glob = os.path.join(bids_fmap_fullpath,bids_json_fglob)
-
-            fmap_jsons = glob.glob(bids_json_glob)
-            if not fmap_jsons:
-                logger.error(f'no JSON file found for {bids_json_glob}')
-                raise IOError
-
-            for json_fname in fmap_jsons:
-                # get filenames by aquisition number
-                series_no = get_json_entity(json_fname,'SeriesNumber')
-
-                nifti_filename = json_fname.rstrip('.json') + '.nii.gz'
-                if not os.path.exists(nifti_filename):
-                    raise ValueError
-                existing_fmap = fmap_no_to_nifti.get(series_no)
-                logger.debug(f'{existing_fmap} {json_fname} {series_no}')
-                if not existing_fmap:
-                    fmap_no_to_nifti[series_no] = nifti_filename
-                elif type(existing_fmap) == str:
-                    fmap_no_to_nifti[series_no] = [existing_fmap,nifti_filename]
-                else:
-                    fmap_no_to_nifti[series_no].append(nifti_filename)
-
-        # Compile list of anat_SeriesNumber:BIDS_run_no
-        # only glob/require anat JSONs when this session has anat scans. The
-        # anat scan gets its BIDS_ID from ITS OWN session's anat/ dir — BOLD
-        # scans link to it by series number (cross-session-safe).
-        anat_no_to_json = {}
-        if sess.anat_scans:
-            bids_anat_fullpath = os.path.join(bids_base,bids_sessionid_dirname,'anat')
-            bids_T1_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_T1w.json'
-            bids_T2_json_fglob = f'sub-{sess.subjid}_ses-{bids_sessionid}_*_T2w.json'
-            bids_T1_json_glob = os.path.join(bids_anat_fullpath,bids_T1_json_fglob)
-            bids_T2_json_glob = os.path.join(bids_anat_fullpath,bids_T2_json_fglob)
-            anat_jsons = glob.glob(bids_T1_json_glob) + glob.glob(bids_T2_json_glob)
-            if not anat_jsons:
-                logger.error(f'no JSON file found for {bids_anat_fullpath}')
-                raise IOError
-            for json in anat_jsons:
-                # get series number for T1w anat from json, save in dict for later
-                anat_regex = f'.*sub-{sess.subjid}_ses-{bids_sessionid}_run-([0-9]+)_(T1w|T2w).json'
-                anat_match = re.match(anat_regex,json)
-                run_no = anat_match.group(1)
-                series_no = get_json_entity(anat_match.string,'SeriesNumber')
-                anat_no_to_json[series_no]=run_no
-            try:
-                for scan_no,anat_scan in iter(sess.anat_scans.items()):
-                    anat_scan['BIDS_ID'] = anat_no_to_json[scan_no]
-            except KeyError as e:
-                logger.debug('anat_no_to_json:')
-                logger.debug(anat_no_to_json)
-                logger.debug('anat_scan:')
-                logger.debug(anat_scan)
-                raise e
-
-        ## Add this info into bold_scan objects
-        for task_name,bold_scan in scans.tasks():
-            scan_no = scans.scan_no 
-            print(scan_no_to_json[scan_no])
-            if (dirSpec == 1) and (ME == 0): # if topup and single echo
-                try:
-                    task,direction,run = scan_no_to_json[scan_no] 
-                except Exception as e:
-                    logger.debug(scan_no_to_json)    
-                    raise e
-                tname = f'{task.upper()}_{direction.upper()}_{run}'
-
-            elif (dirSpec == 0) and (ME == 0):  #if fsl fieldmap and single echo
-                try:
-                    print(scan_no_to_json[scan_no])
-                    task,run = scan_no_to_json[scan_no] 
-                except Exception as e:
-                    logger.debug(scan_no_to_json)    
-                    raise e
-                tname = f'{task.upper()}'
-
-            elif (dirSpec == 1) and (ME == 1): # if topup and multi-echo
-                try:
-                    task,direction,run,echonum = scan_no_to_json[scan_no] 
-                except Exception as e:
-                    logger.debug(scan_no_to_json)    
-                    raise e
-                tname = f'{task.upper()}_{direction.upper()}_{run}'
-
-            elif (dirSpec == 0) and (ME == 1): # if fsl fieldmap and multi-echo
-                try:
-                    task,run,echonum = scan_no_to_json[scan_no] 
-                except Exception as e:
-                    logger.debug(scan_no_to_json)    
-                    raise e
-                tname = f'{task.upper()}'
-
-            if tname != task_name:
-                errname=f'BIDS taskname "{task}" does not match boldscan task name "{task_name}" for sessid {sessionid}, scan {scan_no}'
-                raise IOError(errname)
-            bold_scan['BIDS_ID'] = run
-            # correct naively-enumerated FMAP directories:
-            fmap1_series_no = bold_scan['FIRST_FMAP']
-            bold_scan['FMAP_DIR'] = 'FMAP'.format(fmap1_series_no)
-            
-        for fmap_dir,fmap_scan in scans.fieldmaps():
-            
-            
-            fmap_scan['FIRST_BIDS_FNAME'] = load_fmap_file_to_scan(fmap_no_to_nifti,fmap_scan,'FIRST_FMAP')
-            fmap_scan['SECOND_BIDS_FNAME'] = load_fmap_file_to_scan(fmap_no_to_nifti,fmap_scan,'SECOND_FMAP')
-
-def load_fmap_file_to_scan(fmap_no_to_nifti,fmap_scan, scan_id):
-    ''' 
-    fmap_scan: fmap_scan from iproc/csvHandler
-    scan_id: 'FIRST_FMAP' or 'SECOND_FMAP' 
-    returns full path to fmap file, or list of such full paths
-    '''
-
-    fmap_series_no = fmap_scan[scan_id]
-    logger.debug(fmap_scan)
+    `bids_base` is the SUBJECT directory (e.g. .../ds000224/sub-MSC01); pybids
+    needs the dataset root (its parent, which holds dataset_description.json and
+    the inherited root-level sidecars).
+    """
     try:
-        fmap_file = fmap_no_to_nifti[str(fmap_series_no)]
+        from bids import BIDSLayout
+    except ImportError as e:  # pragma: no cover - env-dependent
+        raise ImportError(
+            "pybids is required for BIDS ingestion (`match_scan_no_to_bids`). "
+            "Install the 'bids' extra (pip install -e '.[bids]') or run inside "
+            "the container, which provides it."
+        ) from e
+    base = os.path.normpath(bids_base)
+    root = os.path.dirname(base)
+    sub = os.path.basename(base)
+    if sub.startswith("sub-"):
+        sub = sub[4:]
+    return BIDSLayout(root, validate=False), sub
 
-    except KeyError as e:
-        logger.debug('fmap_no_to_nifti')
-        logger.debug(fmap_no_to_nifti)
-        raise e
-    fmap_scan['DIR'] = f'FMAP'
-    return fmap_file
 
-def get_json_entity(json,entity):
-    return str(commons.get_json_entity(json,entity))
+def _run_str(fpath):
+    """Raw, zero-padding-preserving BIDS run token from the filename (e.g.
+    '01', '001'), or None if the file carries no run entity. Downstream
+    steps.py globs `_run-{BIDS_ID}_`, so the exact padding must be preserved
+    (pybids' parsed run int would drop it)."""
+    m = re.search(r'_run-([0-9]+)', os.path.basename(fpath))
+    return m.group(1) if m else None
+
+
+def _run_sortkey(fpath):
+    s = _run_str(fpath)
+    return int(s) if s is not None else 1
+
+
+def match_scan_no_to_bids(bids_base, scans):
+    """Populate BIDS_ID (BIDS run) on bold/anat scans and the fmap NIfTI paths
+    on fmap scans, via pybids. Contract consumed by steps.py:
+      bold_scan['BIDS_ID'] = <run>, bold_scan['FMAP_DIR'] = 'FMAP'
+      anat_scan['BIDS_ID'] = <run>
+      fmap_scan['FIRST_BIDS_FNAME'] = magnitude NIfTI(s) (or AP epi for topup)
+      fmap_scan['SECOND_BIDS_FNAME'] = phasediff NIfTI (or PA epi for topup)
+      fmap_scan['DIR'] = 'FMAP'
+    """
+    layout, sub = _get_layout(bids_base)
+
+    for sessionid, sess in scans.scan_by_session.items():
+        bids_ses = sanitize(sessionid)
+
+        # --- BOLD: map scanlist rows -> BIDS runs by (task, order) ---
+        if sess.bold_scans:
+            rows_by_task = col.defaultdict(list)
+            for bs in sess.bold_scans.values():
+                rows_by_task[bs['TYPE'].upper()].append(bs)
+
+            bolds = layout.get(subject=sub, session=bids_ses, suffix='bold',
+                               extension=['.nii', '.nii.gz'], return_type='file')
+            runs_by_task = col.defaultdict(set)
+            for f in bolds:
+                ent = layout.parse_file_entities(f)
+                task = (ent.get('task') or '').upper()
+                rs = _run_str(f)
+                if rs is not None:
+                    runs_by_task[task].add(rs)
+
+            for task_up, rows in rows_by_task.items():
+                rows = sorted(rows, key=lambda s: int(s['BLD']))
+                runs = sorted(runs_by_task.get(task_up, ()), key=int)
+                if len(runs) != len(rows):
+                    logger.warning(
+                        "[bids] %s/ses-%s task=%s: %d scanlist row(s) vs %d BIDS "
+                        "run(s); pairing in order", sub, bids_ses, task_up,
+                        len(rows), len(runs))
+                for bs, run in zip(rows, runs):
+                    bs['BIDS_ID'] = str(run)
+                    bs['FMAP_DIR'] = 'FMAP'
+                if len(rows) > len(runs):
+                    leftover = rows[len(runs):]
+                    raise IOError(
+                        f"no BIDS bold run for scanlist row(s) task={task_up} "
+                        f"BLD={[r['BLD'] for r in leftover]} in ses-{bids_ses} "
+                        f"(sub-{sub}); found runs {runs}")
+
+        # --- ANAT: resolve from THIS session's own anat (cross-session-safe) ---
+        if sess.anat_scans:
+            anats = layout.get(subject=sub, session=bids_ses,
+                               suffix=['T1w', 'T2w'],
+                               extension=['.nii', '.nii.gz'], return_type='file')
+            anats = sorted(anats, key=_run_sortkey)
+            if not anats:
+                raise IOError(
+                    f"no BIDS T1w/T2w found in ses-{bids_ses} for sub-{sub}")
+            arows = sorted(sess.anat_scans.values(), key=lambda s: int(s['ANAT']))
+            for a, f in zip(arows, anats):
+                a['BIDS_ID'] = _run_str(f) or "1"
+            # more scanlist anat rows than files: reuse the last (defensive)
+            for a in arows[len(anats):]:
+                a['BIDS_ID'] = _run_str(anats[-1]) or "1"
+
+        # --- FMAP ---
+        if sess.fmap_scans:
+            mags = sorted(layout.get(
+                subject=sub, session=bids_ses,
+                suffix=['magnitude1', 'magnitude2', 'magnitude'],
+                extension=['.nii', '.nii.gz'], return_type='file'))
+            phase = layout.get(
+                subject=sub, session=bids_ses,
+                suffix=['phasediff', 'phase1', 'phase2'],
+                extension=['.nii', '.nii.gz'], return_type='file')
+            epis = layout.get(subject=sub, session=bids_ses, suffix='epi',
+                              extension=['.nii', '.nii.gz'], return_type='file')
+
+            for fm in sess.fmap_scans.values():
+                if phase:  # phasediff / gradient-echo regime
+                    if not mags:
+                        raise IOError(
+                            f"phasediff fmap but no magnitude in ses-{bids_ses} "
+                            f"(sub-{sub})")
+                    fm['FIRST_BIDS_FNAME'] = mags if len(mags) != 1 else mags[0]
+                    fm['SECOND_BIDS_FNAME'] = phase[0]
+                elif epis:  # pepolar / topup regime
+                    def _pe(e):
+                        ent = layout.parse_file_entities(e)
+                        return (ent.get('direction') or '')
+                    ap = sorted(e for e in epis if _pe(e).upper().startswith('AP')
+                                or 'dir-AP' in e)
+                    pa = sorted(e for e in epis if e not in ap)
+                    fm['FIRST_BIDS_FNAME'] = (ap if len(ap) != 1 else ap[0]) if ap else None
+                    fm['SECOND_BIDS_FNAME'] = (pa if len(pa) != 1 else pa[0]) if pa else None
+                else:
+                    raise IOError(
+                        f"no recognizable fieldmap files in ses-{bids_ses} "
+                        f"(sub-{sub})")
+                fm['DIR'] = 'FMAP'
+
+
+def get_json_entity(json, entity):
+    return str(commons.get_json_entity(json, entity))
+
 
 class SplitTaskError(Exception):
     pass
+
 
 def sanitize(s):
     regex = re.compile('[^a-zA-Z0-9]')
     return regex.sub('', s)
 
-def split_task(s): 
-    regex = re.compile('([a-zA-Z]+)_?(\d+)?') 
-    match = regex.match(s) 
-    if not match: 
-        raise SplitTaskError(f'failed to split task "{s}"') 
-    task,run = match.groups('1')
-    return task,run
+
+def split_task(s):
+    regex = re.compile('([a-zA-Z]+)_?(\d+)?')
+    match = regex.match(s)
+    if not match:
+        raise SplitTaskError(f'failed to split task "{s}"')
+    task, run = match.groups('1')
+    return task, run

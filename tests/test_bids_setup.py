@@ -623,12 +623,17 @@ def test_match_scan_no_to_bids_cross_session_no_crash(tmp_path):
     from iproc.bids import match_scan_no_to_bids
 
     # --- BIDS tree: T1 in ses-struct01, BOLD+fmap in ses-func01 ---
+    # pybids needs a dataset root + sub-XX layer (match_scan_no_to_bids receives
+    # the SUBJECT dir and indexes from its parent).
     bids = tmp_path / "bids"
-    st = bids / "ses-struct01" / "anat"; st.mkdir(parents=True)
+    bids.mkdir(parents=True, exist_ok=True)
+    (bids / "dataset_description.json").write_text('{"Name":"t","BIDSVersion":"1.9.0"}')
+    sub_dir = bids / "sub-MSC01"
+    st = sub_dir / "ses-struct01" / "anat"; st.mkdir(parents=True)
     (st / "sub-MSC01_ses-struct01_run-01_T1w.nii.gz").write_bytes(b"")
     _write_json(st / "sub-MSC01_ses-struct01_run-01_T1w.json", {"SeriesNumber": 52})
 
-    fu = bids / "ses-func01"
+    fu = sub_dir / "ses-func01"
     (fu / "func").mkdir(parents=True); (fu / "fmap").mkdir()
     (fu / "func" / "sub-MSC01_ses-func01_task-rest_run-01_bold.nii.gz").write_bytes(b"")
     _write_json(fu / "func" / "sub-MSC01_ses-func01_task-rest_run-01_bold.json",
@@ -666,7 +671,7 @@ def test_match_scan_no_to_bids_cross_session_no_crash(tmp_path):
     scans.ingest_bold_csv(str(scan_csv))
 
     # Must not raise (upstream raised IOError on the func session's missing anat/).
-    match_scan_no_to_bids(str(bids), scans)
+    match_scan_no_to_bids(str(sub_dir), scans)
 
     # struct01's anat got its BIDS_ID from its own anat/ dir.
     struct = scans.scan_by_session["struct01"]
