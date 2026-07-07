@@ -28,7 +28,7 @@ def _is_compiled_artifact(f):
 # docs/fork-audit.md bucket A2. Either way they must still match the fork's
 # applied fix and differ from upstream's un-fixed version.
 NEUTRAL_FROM_FORK = [
-    "runscript/recon_all.sh", "runscript/combine_warps_parallel.sbatch",
+    "runscript/combine_warps_parallel.sbatch",
     "runscript/combine_warps_parallel_ME.sbatch", "runscript/fs6_project_to_surf.sh",
     "runscript/calculate_nuisance_params.sh", "runscript/fm_unwarp_and_mc_to_midvol.sh",
     "iProc_p4_sbatch_combined.py", "iProc_p4_sbatch_combined_ME.py",
@@ -44,8 +44,12 @@ NEUTRAL_FROM_FORK = [
 # uses it to read echo/dwell metadata from inherited higher-level sidecars when
 # no per-run sidecar exists (e.g. MSC); byte-identical to upstream when the
 # adjacent sidecar is present. See NOTICE.md / docs/fork-audit.md.
+# runscript/recon_all.sh accepts N trailing T1 inputs (T1_AVERAGE mode),
+# placing them as orig/001..00N.mgz for recon-all to motion-correct and
+# average; with a single input the emitted recon-all command is unchanged.
 OURS = {"cli/iproc.py", "steps.py", "runscript/fmap_from_bids.py",
-        "bids/__init__.py", "commons/__init__.py", "runscript/func_from_bids.py"}
+        "bids/__init__.py", "commons/__init__.py", "runscript/func_from_bids.py",
+        "runscript/recon_all.sh"}
 
 def _iter_upstream_core():
     for f in (UP / "iproc").rglob("*"):

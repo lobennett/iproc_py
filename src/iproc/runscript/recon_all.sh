@@ -14,6 +14,7 @@ SUBJECTSDIR=$5
 FSAVERAGE6=$6
 SCRATCHDIR=$7
 CODEDIR=$8
+shift 8   # any remaining args are additional T1 inputs (T1_AVERAGE mode)
 
 cpus=$(python -c "import os; cpus=len(os.sched_getaffinity(0)); print(cpus)")
 export OMP_NUM_THREADS=${cpus}
@@ -27,6 +28,16 @@ mkdir -m 750 -p $origdir
 
 mri_convert $MPR_REORIENT $origdir/001.mgz
 input_file=$origdir/001.mgz
+
+# Additional T1 inputs (T1_AVERAGE mode): recon-all's -motioncor stage
+# robustly aligns and averages orig/001.mgz .. 00N.mgz. With no extra args
+# this loop is a no-op, so the single-T1 invocation is byte-for-byte unchanged.
+idx=2
+for extra_t1 in "$@"; do
+    printf -v num '%03d' "$idx"
+    mri_convert "$extra_t1" "$origdir/${num}.mgz"
+    idx=$((idx + 1))
+done
 
 if [ "${T2_REORIENT}" != "__none__" ]; then
     recon-all \
