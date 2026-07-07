@@ -64,7 +64,7 @@ that matter most:
 | Decision | How it is made | Where to override |
 |---|---|---|
 | **Fieldmap regime** | `fieldmap.detect_regime()` classifies each session as `fsl_prepare_fieldmap` (magnitude + phasediff, gradient-echo), `topup` (opposed-PE `epi`/pepolar), `direct` (a ready-made fieldmap), or `none`. It reports a **confidence** and **warnings**; low-confidence or mixed-regime datasets require `--force`. Metadata is read through **BIDS inheritance** (root-level `*_bold.json` / `phasediff.json`), so datasets without per-run sidecars (e.g. MSC) classify correctly. | `manifest.yaml` fieldmap fields; `PREPTOOL` in the `.cfg`. |
-| **T1 selection** | The **latest session** that has a `T1w`, and within it the **latest run**, is chosen (rationale: earlier structurals are more likely to be low quality). Its session + series number become `T1_SESS` / `T1_SCAN_NO`. | `t1_selection` in `manifest.yaml` before `generate`; or `T1_SESS`/`T1_SCAN_NO` in the `.cfg` after the `setup` QC gate. |
+| **T1 selection** | The **latest session** that has a `T1w`, and within it the **latest run**, is chosen (rationale: earlier structurals are more likely to be low quality). Its session + series number become `T1_SESS` / `T1_SCAN_NO`. Pass `iproc-generate --average-t1` to instead average ALL of the subject's T1w (sets `T1_AVERAGE=true`, marks every T1w `Analyze=1`); recon-all then runs on the motion-corrected average. | `t1_selection` in `manifest.yaml` before `generate`; or `T1_SESS`/`T1_SCAN_NO` in the `.cfg` after the `setup` QC gate. |
 | **Cross-session anat** | The selected T1's series number is **broadcast** to every session, so BOLD runs in sessions with no structural of their own still reference the chosen T1. | automatic. |
 | **Midvol target** | The **first session, first BOLD run** provides the reference volume everything aligns to. | `MIDVOL_SESS` / `MIDVOL_BOLDNO` / `MIDVOL_VOLNO` in the `.cfg`. |
 | **Single- vs multi-echo** | Per-task `NUMECHOS` (from the task CSV). Multi-echo changes ingestion (per-echo files), can insert `tedana`, and takes a reduced filtering path. | task CSV / `.cfg`. |
@@ -108,6 +108,9 @@ Internal steps (`setup()` in `cli/iproc.py`):
    fieldmap with a nearby BOLD.
 5. **`recon-all`** — `steps.recon_all()` → `recon_all.sh`: full FreeSurfer
    surface reconstruction on the selected T1. **This is the multi-hour step.**
+   When `T1_AVERAGE=true`, recon-all instead receives all of the subject's
+   reoriented T1w as `orig/001…00N.mgz` and averages them (its `-motioncor`
+   stage) before reconstruction.
 
 **Decision point / QC gate:** iProc prints `freeview` commands to (a) check the
 fieldmap QC PDF and (b) inspect the pial/white surfaces against the T1 and the

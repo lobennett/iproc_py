@@ -163,6 +163,10 @@ has BOLD runs but no anatomical of its own would get `ANAT=0` and fail
 downstream registration; instead it correctly references the subject's one
 chosen T1 regardless of which session the T1 was actually acquired in.
 
+- **T1 averaging (opt-in, beyond upstream).** `iproc-generate --average-t1`
+  averages all of a subject's T1w via FreeSurfer multi-input recon-all
+  (`T1_AVERAGE=true`). Default is single-T1, byte-identical to upstream.
+
 ## Warnings and the `--force` / `--allow-no-fieldmap` gates
 
 `bids_generate.py` refuses to write any config files (nonzero exit, no

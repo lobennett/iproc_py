@@ -49,6 +49,11 @@ provably identical either way, so there is no science cost to always applying it
 | iproc/bids/__init__.py (`match_scan_no_to_bids`) | **APPLIED (cross-session-anat):** iterate over EVERY session in `scan_by_session` (not just `scans.sessions()`, which is BOLD-only) and glob/require each modality's JSON sidecars only when the session actually carries scans of that modality (`sess.bold_scans` / `sess.fmap_scans` / `sess.anat_scans`). Upstream iterated BOLD sessions only and unconditionally globbed `func/`, `fmap/`, and `anat/`, raising `IOError` for any session missing a modality dir. That crashes datasets whose T1w lives in a different session than the BOLD/fmap (e.g. MSC: T1 in `ses-struct*`, BOLD/fmap in `ses-func*`): the func session crashed on the missing `anat/` glob, and the struct session (no BOLD) was never visited so its anat never received a `BIDS_ID`. The anat now gets its `BIDS_ID` from ITS OWN session's `anat/` dir; BOLD scans continue to link the anat by series number. **Behavior-preserving for same-session datasets** — every session there has all three modalities, so every glob still runs exactly as upstream and the visited-session set is identical. | generalization (cross-session-anat ingestion) | applied (cross-session-anat) |
 | iproc/qc/__init__.py | treat convert OK if PDF exists | infra, verify neutrality | Task 3 (verify) or Task 9 |
 
+- `runscript/recon_all.sh` + `steps.recon_all` + `bids_app/generate.py`:
+  opt-in T1 averaging (`--average-t1` / `T1_AVERAGE=true`). Runs recon-all on
+  the motion-corrected average of all T1w. Default single-T1 path is unchanged
+  and byte-identical to upstream (protected by the golden command test).
+
 ## C. Infrastructure (adopted wholesale, ours to harden)
 
 container/*, bids_setup/*, docs/* — adopted in Tasks 5–11.

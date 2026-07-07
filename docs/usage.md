@@ -183,6 +183,22 @@ See `bids_setup/README.md` for the full flag reference (`--skip`,
 design-decision table (T1 selection, MIDVOL target, SeriesNumber synthesis,
 etc.).
 
+### Averaging multiple T1w scans (`--average-t1`)
+
+By default `iproc-generate` selects a single T1w (latest structural session,
+latest run) for FreeSurfer, matching upstream iProc. For datasets that acquire
+several T1w per subject to be averaged (e.g. MSC — 4 per subject), pass
+`--average-t1`:
+
+    iproc-generate manifest.yaml --iproc-dir <out> --average-t1
+
+This sets `T1_AVERAGE=true` in each subject's `.cfg` and marks every T1w
+`Analyze=1`. During `setup`, all T1w are reoriented and `recon-all` runs on
+their motion-corrected average (FreeSurfer aligns and averages
+`orig/001…00N.mgz`). The FreeSurfer subject name and all downstream stages are
+unchanged — only recon-all's inputs grow. Averaging is T1-only (T2 refinement
+is not combined). Leave the flag off for a strict single-T1 iProc replication.
+
 ## BIDS-App interface (`iproc-app`)
 
 For a standard, nipreps-style entry point there is an additive console command
