@@ -224,6 +224,7 @@ def generate_scanlist_csv(
     sub_data: dict,
     output_path: Path,
     allow_no_fieldmap: bool = False,
+    average_t1: bool = False,
 ) -> None:
     """Write scanlist_{sub}.csv for one subject, routed by fieldmap regime."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -278,7 +279,7 @@ def generate_scanlist_csv(
                            and anat["run"] == t1_sel["run"])
             rows.append(_row(
                 SESSION_ID=ses_label,
-                Analyze=1 if is_selected else 0,
+                Analyze=1 if (is_selected or average_t1) else 0,
                 TYPE="ANAT",
                 ANAT=anat["series_number"],
             ))
@@ -362,6 +363,7 @@ SUBJECTS_DIR=${{iproc:basedir}}/fs/${{iproc:sub}}
 [T1]
 T1_SESS={t1_sess}
 T1_SCAN_NO={t1_scan_no:03d}
+T1_AVERAGE={t1_average}
 
 [out_atlas]
 # 111 for 1mm isotropic, 222 for 2mm isotropic
@@ -382,6 +384,7 @@ def generate_subject_config(
     resolution: int,
     fsldir: str,
     freesurfer_home: str,
+    average_t1: bool = False,
 ) -> None:
     """Write {sub}.cfg for one subject."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -407,6 +410,7 @@ def generate_subject_config(
         res_mm=res_mm,
         fsldir=fsldir,
         freesurfer_home=freesurfer_home,
+        t1_average=str(average_t1).lower(),
     )
 
     with open(output_path, "w") as f:
@@ -442,6 +446,7 @@ def generate_all(
     force: bool = False,
     allow_no_fieldmap: bool = False,
     allow_missing_anat: bool = False,
+    average_t1: bool = False,
 ) -> None:
     """Generate all iProc config files from the manifest."""
     iproc_dir = iproc_dir.resolve()
@@ -583,6 +588,7 @@ def generate_all(
             sub_data,
             sub_lists_dir / f"scanlist_{sub_label}.csv",
             allow_no_fieldmap=allow_no_fieldmap,
+            average_t1=average_t1,
         )
 
         # 2c. Subject config
@@ -594,6 +600,7 @@ def generate_all(
             resolution=resolution,
             fsldir=fsldir,
             freesurfer_home=freesurfer_home,
+            average_t1=average_t1,
         )
 
     log.info("")
@@ -637,6 +644,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Proceed even if a subject has no selected T1w or no "
                              "midvol/BOLD target (otherwise blocks instead of "
                              "emitting T1_SESS=UNKNOWN)")
+    parser.add_argument("--average-t1", action="store_true",
+                        help="Run FreeSurfer recon-all on the motion-corrected "
+                             "average of ALL of each subject's T1w scans (sets "
+                             "T1_AVERAGE=true and marks every T1w Analyze=1). "
+                             "Default: single selected T1 (upstream iProc "
+                             "behavior).")
     return parser
 
 
@@ -661,6 +674,7 @@ def run_generate(args: argparse.Namespace) -> None:
         force=args.force,
         allow_no_fieldmap=args.allow_no_fieldmap,
         allow_missing_anat=args.allow_missing_anat,
+        average_t1=args.average_t1,
     )
 
 

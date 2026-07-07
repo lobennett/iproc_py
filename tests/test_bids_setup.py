@@ -680,3 +680,56 @@ def test_match_scan_no_to_bids_cross_session_no_crash(tmp_path):
     func = scans.scan_by_session["func01"]
     assert func.bold_scans[9]["BIDS_ID"] == "01"
     assert func.bold_scans[9]["ANAT"] == "52"
+
+
+def _build_two_t1_ds(tmp_path):
+    """One session with TWO T1w runs (series 4, 5) plus a BOLD + Siemens
+    phasediff fieldmap — the minimal multi-T1 subject for averaging."""
+    ds = tmp_path / "ds"
+    s = ds / "sub-01" / "ses-01"
+    (s / "anat").mkdir(parents=True)
+    (s / "func").mkdir()
+    (s / "fmap").mkdir()
+    for run, sn in (("01", 4), ("02", 5)):
+        (s / "anat" / f"sub-01_ses-01_run-{run}_T1w.nii.gz").write_bytes(b"")
+        _write_json(s / "anat" / f"sub-01_ses-01_run-{run}_T1w.json",
+                    {"SeriesNumber": sn, "Manufacturer": "Siemens"})
+    (s / "func" / "sub-01_ses-01_task-rest_run-01_bold.nii.gz").write_bytes(b"")
+    _write_json(s / "func" / "sub-01_ses-01_task-rest_run-01_bold.json",
+                {"SeriesNumber": 9, "RepetitionTime": 2.0})
+    (s / "fmap" / "sub-01_ses-01_magnitude1.nii.gz").write_bytes(b"")
+    _write_json(s / "fmap" / "sub-01_ses-01_magnitude1.json", {"SeriesNumber": 6})
+    (s / "fmap" / "sub-01_ses-01_phasediff.nii.gz").write_bytes(b"")
+    _write_json(s / "fmap" / "sub-01_ses-01_phasediff.json",
+                {"SeriesNumber": 7, "Manufacturer": "Siemens",
+                 "EchoTimeDifference": 0.00246})
+    return ds
+
+
+def _generate(tmp_path, ds, *extra):
+    man = tmp_path / "m.yaml"
+    assert _run("bids_discover.py", ds, "--output", man).returncode == 0
+    gen = tmp_path / "gen"
+    r = _run("bids_generate.py", man, "--iproc-dir", gen, "--codedir", REPO, *extra)
+    assert r.returncode == 0, r.stderr
+    import csv
+    with open(next(gen.rglob("scanlist_*.csv"))) as f:
+        rows = list(csv.DictReader(f))
+    cfg = next(gen.rglob("*.cfg")).read_text()
+    return rows, cfg
+
+
+def test_average_t1_marks_all_anat_and_sets_cfg_flag(tmp_path):
+    rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path), "--average-t1")
+    anat = [r for r in rows if r["TYPE"] == "ANAT"]
+    assert len(anat) == 2, rows
+    assert all(r["Analyze"] == "1" for r in anat), anat
+    assert "T1_AVERAGE=true" in cfg
+
+
+def test_default_selects_single_t1_and_flag_false(tmp_path):
+    rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path))
+    anat = [r for r in rows if r["TYPE"] == "ANAT"]
+    assert len(anat) == 2, rows
+    assert sum(1 for r in anat if r["Analyze"] == "1") == 1, anat
+    assert "T1_AVERAGE=false" in cfg

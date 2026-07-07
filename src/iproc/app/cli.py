@@ -309,6 +309,7 @@ def _run_participant(
         force=False,
         allow_no_fieldmap=False,
         allow_missing_anat=False,
+        average_t1=False,
     )
     generate.run_generate(generate_ns)
 
