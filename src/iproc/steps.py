@@ -490,12 +490,17 @@ class jobConstructor(object):
         mpr_list = []
         for sessionid, sess in self.scans.anat_sessions():
             for anat_subdir, anat_scan in self.scans.anats():
+                t2_scan_no = int(anat_scan['T2'])
+                t2_session_id = anat_scan['T2_SESSION_ID']
+                is_t2 = t2_scan_no and t2_session_id == '0'
+                if is_t2:
+                    # do not fold a T2w scan into the T1 average
+                    continue
                 anatno = f'{int(self.scans.scan_no):03d}'
                 mpr_list.append(os.path.join(
                     self.conf.iproc.NATDIR, sessionid,
                     f'{anat_subdir}_{anatno}',
                     f'{sessionid}_mpr{anatno}_reorient.nii.gz'))
-        self.scans.reset_default_sessionid()
         mpr_list = sorted(mpr_list)
         if not mpr_list:
             raise Exception('T1_AVERAGE set but no reoriented T1w found')
@@ -503,6 +508,7 @@ class jobConstructor(object):
         job_spec_list = []
         outfiles = [anat_vol, pial_surf]
         if self._outfiles_skip(overwrite, outfiles):
+            self.scans.reset_default_sessionid()
             return job_spec_list
 
         cmd = [
@@ -519,6 +525,7 @@ class jobConstructor(object):
         logger.debug(json.dumps(cmd, indent=2))
         logfile_base = self._io_file_fmt(cmd)
         job_spec_list.append(JobSpec(cmd, logfile_base, outfiles))
+        self.scans.reset_default_sessionid()
         return job_spec_list
 
     def xnat_to_nii_gz_task(self, overwrite=True):
