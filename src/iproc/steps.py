@@ -409,6 +409,11 @@ class jobConstructor(object):
         logger.debug('fs_recon_all')
         job_spec_list = []
         self.reset_steplog()
+        average_t1 = str(
+            self.conf.get('T1', 'T1_AVERAGE', 'false')
+        ).strip().lower() in ('true', '1', 'yes')
+        if average_t1:
+            return self._recon_all_averaged(overwrite)
         for sessionid,sess in self.scans.anat_sessions():
             for anat_subdir, anat_scan in self.scans.anats():
                 # Zero-pad ANAT scan number
@@ -469,6 +474,51 @@ class jobConstructor(object):
                 logfile_base = self._io_file_fmt(cmd)
                 job_spec_list.append(JobSpec(cmd,logfile_base,outfiles))
         self.scans.reset_default_sessionid()
+        return job_spec_list
+
+    def _recon_all_averaged(self, overwrite=True):
+        """recon-all on the motion-corrected average of ALL the subject's T1w
+        (T1_AVERAGE mode). Emits exactly one job under the representative
+        fs_sub (from [T1] T1_SESS/T1_SCAN_NO), whose command lists every
+        reoriented T1; recon_all.sh places them as orig/001..00N.mgz and
+        recon-all averages them. T2 refinement is not combined here."""
+        logger.debug('fs_recon_all (T1_AVERAGE)')
+        fs_sub = f'{self.conf.T1.T1_SESS}_{int(self.conf.T1.T1_SCAN_NO):03d}'
+        anat_vol = os.path.join(self.conf.fs.SUBJECTS_DIR, fs_sub, 'mri', 'T1.mgz')
+        pial_surf = os.path.join(self.conf.fs.SUBJECTS_DIR, fs_sub, 'surf', 'lh.pial')
+
+        mpr_list = []
+        for sessionid, sess in self.scans.anat_sessions():
+            for anat_subdir, anat_scan in self.scans.anats():
+                anatno = f'{int(self.scans.scan_no):03d}'
+                mpr_list.append(os.path.join(
+                    self.conf.iproc.NATDIR, sessionid,
+                    f'{anat_subdir}_{anatno}',
+                    f'{sessionid}_mpr{anatno}_reorient.nii.gz'))
+        self.scans.reset_default_sessionid()
+        mpr_list = sorted(mpr_list)
+        if not mpr_list:
+            raise Exception('T1_AVERAGE set but no reoriented T1w found')
+
+        job_spec_list = []
+        outfiles = [anat_vol, pial_surf]
+        if self._outfiles_skip(overwrite, outfiles):
+            return job_spec_list
+
+        cmd = [
+            os.path.join(self.conf.iproc.CODEDIR, 'runscript', 'recon_all.sh'),
+            self.conf.iproc.SUB,
+            fs_sub,
+            mpr_list[0],
+            '__none__',
+            self.conf.fs.SUBJECTS_DIR,
+            self.conf.out_atlas.FS6,
+            self.conf.iproc.SCRATCHDIR,
+            self.conf.iproc.CODEDIR,
+        ] + mpr_list[1:]
+        logger.debug(json.dumps(cmd, indent=2))
+        logfile_base = self._io_file_fmt(cmd)
+        job_spec_list.append(JobSpec(cmd, logfile_base, outfiles))
         return job_spec_list
 
     def xnat_to_nii_gz_task(self, overwrite=True):
