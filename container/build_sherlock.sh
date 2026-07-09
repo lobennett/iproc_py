@@ -16,7 +16,7 @@
 
 #SBATCH --job-name=iproc_build
 #SBATCH --partition=normal
-#SBATCH --time=02:00:00
+#SBATCH --time=08:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
 #SBATCH --output=build_%j.log

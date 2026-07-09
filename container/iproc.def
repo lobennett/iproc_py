@@ -4,16 +4,17 @@ From: ubuntu:22.04
 %labels
     Author Logan Bennett
     Description iProc v2.6 preprocessing pipeline container
-    Version 1.1.0
+    Version 1.2.0
     iProc_Version v2.6.0-beta.4
 
 %help
     iProc preprocessing pipeline container for neuroimaging data.
 
-    FSL versions installed (closest available to iProc's validated versions):
-      - FSL 4.1.9   (mapped from iProc's 4.0.3 requests)
-      - FSL 5.0.8   (mapped from iProc's 5.0.4 and 5.0.10 requests)
-      - FSL 6.0.7+  (mapped from iProc's 6.0.1 requests, installed via conda)
+    FSL: a single working install — 6.0.7 (conda build). iProc's runscripts
+    request 4.0.3/5.0.4/5.0.10/6.0.1 per step via `module load`; all of those
+    are symlinked onto /opt/fsl-6.0.7. The old centos5/6 binaries are NOT
+    installed because their FNIRT crashes (NEWMAT SingularException) on a
+    modern base OS; 6.0.7 runs correctly and emits decimal .mat matrices.
 
     Also: FreeSurfer 6.0.0, AFNI 16.3.13, ANTs 2.4.4, Python 3.11 + tedana,
     GNU Parallel, dcm2niix, ImageMagick, Connectome Workbench 1.3.2.
@@ -45,6 +46,11 @@ From: ubuntu:22.04
     flirt_wrapper.sh /opt/flirt_wrapper.sh
     convert_xfm_wrapper.sh /opt/convert_xfm_wrapper.sh
     downloads/license.txt /opt/freesurfer-6.0.0/license.txt
+    # Staged here; %post copies it over the ImageMagick package default AFTER
+    # imagemagick is apt-installed (a %files copy to /etc would be clobbered by
+    # the apt install). Raises memory/disk/area + list-length so iProc's
+    # many-run QC `convert -adjoin` PDFs work without a runtime --bind.
+    imagemagick-policy.xml /opt/imagemagick-policy.xml
     # If you have exact FSL versions from Sherlock, uncomment and add:
     # downloads/fsl-4.0.3.tar.gz /tmp/fsl-sherlock-4.0.3.tar.gz
     # downloads/fsl-5.0.4.tar.gz /tmp/fsl-sherlock-5.0.4.tar.gz
@@ -77,9 +83,9 @@ From: ubuntu:22.04
     #   Python                      3.11             deadsnakes PPA (ppa:deadsnakes/ppa)
     #   GNU Parallel                Ubuntu 22.04 apt  apt package "parallel"
     #   dcm2niix                    v1.0.20230411    github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/
-    #   FSL (mapped from 4.0.3)     4.1.9            fsl.fmrib.ox.ac.uk/fsldownloads/oldversions/fsl-4.1.9-centos5_64.tar.gz
-    #   FSL (mapped from 5.0.4/5.0.10) 5.0.8         fsl.fmrib.ox.ac.uk/fsldownloads/oldversions/fsl-5.0.8-centos6_64.tar.gz
-    #   FSL (mapped from 6.0.1)     6.0.7+ (conda)   fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/fslinstaller.py
+    #   FSL (ALL versions -> 6.0.7) 6.0.7+ (conda)   fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/fslinstaller.py
+    #      (old centos 4.1.9/5.0.8 tarballs dropped: their fnirt is broken on a
+    #       modern base OS; every iProc version request is symlinked to 6.0.7)
     #   FreeSurfer                  6.0.0            surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/6.0.0/freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz
     #   AFNI                        latest-stable*   afni.nimh.nih.gov/pub/dist/tgz/linux_openmp_64.tgz  (*see note in section 6)
     #   ANTs                        2.4.4            github.com/ANTsX/ANTs/releases/download/v2.4.4/ants-2.4.4-ubuntu-22.04-X64-gcc.zip
@@ -106,6 +112,7 @@ From: ubuntu:22.04
         file \
         gcc \
         g++ \
+        ghostscript \
         git \
         imagemagick \
         libc6 \
@@ -123,6 +130,7 @@ From: ubuntu:22.04
         libxi6 \
         libxmu6 \
         libxrender1 \
+        libxss1 \
         libxt6 \
         locales \
         software-properties-common \
@@ -175,99 +183,22 @@ From: ubuntu:22.04
     rm -f dcm2niix.zip
 
     # ------------------------------------------------------------------
-    # 4. FSL — three installations covering all iProc's version needs
+    # 4. FSL 6.0.7 — the single, working FSL for the whole pipeline
     # ------------------------------------------------------------------
-    # iProc dynamically switches between FSL 4.0.3, 5.0.4, 5.0.10, 6.0.1.
-    # FSL no longer distributes those exact versions as binaries.
-    # We install the closest available and map via the module shim.
-    #
-    # If you have exact versions from Sherlock (see README), those will be
-    # used instead when placed in downloads/ and the %files lines uncommented.
-
-    # --- FSL 4.1.9 (substitutes for iProc's 4.0.3) ---
-    # Used for: bet2, fslmaths -ero, fugue, sigloss
-    echo "=== Installing FSL 4.1.9 (mapped as 4.0.3) ==="
-    if [[ -f /tmp/fsl-sherlock-4.0.3.tar.gz ]]; then
-        echo "  Using exact 4.0.3 from Sherlock"
-        mkdir -p /opt/fsl-4.0.3
-        tar xzf /tmp/fsl-sherlock-4.0.3.tar.gz -C /opt/fsl-4.0.3 --strip-components=1
-        rm -f /tmp/fsl-sherlock-4.0.3.tar.gz
-    else
-        mkdir -p /opt/fsl-4.1.9
-        cd /tmp
-        curl -fSL "https://fsl.fmrib.ox.ac.uk/fsldownloads/oldversions/fsl-4.1.9-centos5_64.tar.gz" \
-            -o fsl-4.1.9.tar.gz
-        tar xzf fsl-4.1.9.tar.gz -C /opt/fsl-4.1.9 --strip-components=1
-        rm -f fsl-4.1.9.tar.gz
-        # Create symlink so module shim mapping works
-        ln -sf /opt/fsl-4.1.9 /opt/fsl-4.0.3
-    fi
-    # Write fsl.sh config
-    for d in /opt/fsl-4.0.3 /opt/fsl-4.1.9; do
-        if [[ -d "$d" ]] && [[ ! -L "$d" ]]; then
-            mkdir -p "${d}/etc/fslconf"
-            cat > "${d}/etc/fslconf/fsl.sh" <<'FSLEOF'
-FSLDIR=PLACEHOLDER
-FSLOUTPUTTYPE=NIFTI_GZ
-export FSLDIR FSLOUTPUTTYPE
-FSLEOF
-            sed -i "s|PLACEHOLDER|${d}|" "${d}/etc/fslconf/fsl.sh"
-        fi
-    done
-
-    # --- FSL 5.0.8 (substitutes for iProc's 5.0.4 and 5.0.10) ---
-    # Used for: fsl_prepare_fieldmap (5.0.4), and everything else (5.0.10)
-    echo "=== Installing FSL 5.0.8 (mapped as 5.0.4 and 5.0.10) ==="
-    HAVE_SHERLOCK_5=false
-    if [[ -f /tmp/fsl-sherlock-5.0.10.tar.gz ]]; then
-        echo "  Using exact 5.0.10 from Sherlock"
-        mkdir -p /opt/fsl-5.0.10
-        tar xzf /tmp/fsl-sherlock-5.0.10.tar.gz -C /opt/fsl-5.0.10 --strip-components=1
-        rm -f /tmp/fsl-sherlock-5.0.10.tar.gz
-        HAVE_SHERLOCK_5=true
-    fi
-    if [[ -f /tmp/fsl-sherlock-5.0.4.tar.gz ]]; then
-        echo "  Using exact 5.0.4 from Sherlock"
-        mkdir -p /opt/fsl-5.0.4
-        tar xzf /tmp/fsl-sherlock-5.0.4.tar.gz -C /opt/fsl-5.0.4 --strip-components=1
-        rm -f /tmp/fsl-sherlock-5.0.4.tar.gz
-        HAVE_SHERLOCK_5=true
-    fi
-    if [[ "$HAVE_SHERLOCK_5" == "false" ]]; then
-        mkdir -p /opt/fsl-5.0.8
-        cd /tmp
-        echo "  Downloading FSL 5.0.8 (~1.5GB, may take several minutes)..."
-        curl --retry 3 --retry-delay 10 -fSL --connect-timeout 30 --max-time 1800 \
-            "https://fsl.fmrib.ox.ac.uk/fsldownloads/oldversions/fsl-5.0.8-centos6_64.tar.gz" \
-            -o fsl-5.0.8.tar.gz
-        echo "  Download complete ($(du -h fsl-5.0.8.tar.gz | cut -f1)). Extracting..."
-        tar xzf fsl-5.0.8.tar.gz -C /opt/fsl-5.0.8 --strip-components=1
-        # Verify extraction succeeded
-        if [[ ! -f /opt/fsl-5.0.8/bin/fslmaths ]]; then
-            echo "ERROR: FSL 5.0.8 extraction failed — /opt/fsl-5.0.8/bin/fslmaths not found"
-            ls -la /opt/fsl-5.0.8/ || true
-            exit 1
-        fi
-        echo "  FSL 5.0.8 installed: $(ls /opt/fsl-5.0.8/bin/ | wc -l) binaries"
-        rm -f fsl-5.0.8.tar.gz
-        ln -sf /opt/fsl-5.0.8 /opt/fsl-5.0.4
-        ln -sf /opt/fsl-5.0.8 /opt/fsl-5.0.10
-    fi
-    for d in /opt/fsl-5.0.4 /opt/fsl-5.0.8 /opt/fsl-5.0.10; do
-        if [[ -d "$d" ]] && [[ ! -L "$d" ]]; then
-            mkdir -p "${d}/etc/fslconf"
-            cat > "${d}/etc/fslconf/fsl.sh" <<'FSLEOF'
-FSLDIR=PLACEHOLDER
-FSLOUTPUTTYPE=NIFTI_GZ
-export FSLDIR FSLOUTPUTTYPE
-FSLEOF
-            sed -i "s|PLACEHOLDER|${d}|" "${d}/etc/fslconf/fsl.sh"
-        fi
-    done
-
-    # --- FSL 6.0.7+ via conda installer (substitutes for iProc's 6.0.1) ---
-    # Used for: topup (spin-echo fieldmaps)
-    echo "=== Installing FSL 6.0.7 via conda installer (mapped as 6.0.1) ==="
+    # iProc's runscripts request FSL 4.0.3 / 5.0.4 / 5.0.10 / 6.0.1 per step
+    # via `module load`. Those exact versions are only distributed as old
+    # centos5/6 binary tarballs, and on a modern base OS several of their tools
+    # — notably FNIRT — crash with NEWMAT/armadillo `inv(): matrix is singular`
+    # / SingularException on ANY input (confirmed empirically: FSL 5.0.4/5.0.8/
+    # 5.0.10 fnirt all abort on a stock MNI152->MNI152 registration; only
+    # 6.0.x/4.1.9 run). So the faithful multi-version install is unachievable
+    # here. We install ONLY FSL 6.0.7 (conda build, ships its own libs, fully
+    # working) and map every version iProc requests onto it via symlinks below.
+    # This changes the FSL version relative to upstream for every step, but the
+    # old binaries do not run at all, so there is no working alternative; and
+    # 6.0.7 emits decimal .mat matrices, sidestepping the hex-float parsing
+    # pitfall entirely.
+    echo "=== Installing FSL 6.0.7 via conda installer (single FSL for all versions) ==="
     cd /tmp
     curl -fsSL "https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/fslinstaller.py" \
         -o fslinstaller.py
@@ -281,7 +212,13 @@ FSLEOF
         ls -la /opt/fsl-6.0.7/bin/ 2>/dev/null || true
         exit 1
     fi
-    ln -sf /opt/fsl-6.0.7 /opt/fsl-6.0.1
+    # Map every FSL version iProc's runscripts / module_shim request onto the
+    # single working 6.0.7 install. module_shim's `module load fsl/X` sets
+    # FSLDIR=/opt/fsl-X, and iProc/cfg paths reference /opt/fsl-X/data/... —
+    # all of these now resolve through the symlink to the real 6.0.7 tree.
+    for v in 4.0.3 4.1.9 5.0.4 5.0.8 5.0.10 6.0.1; do
+        ln -sf /opt/fsl-6.0.7 /opt/fsl-${v}
+    done
     if [[ -d /opt/fsl-6.0.7 ]] && [[ ! -L /opt/fsl-6.0.7 ]]; then
         mkdir -p /opt/fsl-6.0.7/etc/fslconf
         if [[ ! -f /opt/fsl-6.0.7/etc/fslconf/fsl.sh ]]; then
@@ -482,6 +419,12 @@ FSLEOF
     chmod +x /opt/module_shim.sh
     cp /opt/module_shim.sh /etc/profile.d/module_shim.sh
 
+    # Install the QC-friendly ImageMagick policy over the package default (now
+    # that imagemagick is installed). Cover IM6 and IM7 locations if present.
+    for pol in /etc/ImageMagick-6/policy.xml /etc/ImageMagick-7/policy.xml; do
+        [[ -d "$(dirname "$pol")" ]] && cp /opt/imagemagick-policy.xml "$pol" && echo "  installed policy -> $pol"
+    done
+
     # ------------------------------------------------------------------
     # 12. Create bind-mount points for Sherlock HPC
     # ------------------------------------------------------------------
@@ -504,8 +447,9 @@ FSLEOF
     # convenience for interactive/`bash -c` use only.
     export BASH_ENV=/opt/module_shim.sh
 
-    # Default FSL (5.0.8 or 5.0.10 mapped as iProc's baseline)
-    export FSLDIR=/opt/fsl-5.0.10
+    # Single working FSL for all steps (6.0.7; all iProc version requests are
+    # symlinked onto it — the old 5.0.x binaries' fnirt is broken on this base OS)
+    export FSLDIR=/opt/fsl-6.0.7
     export FSLOUTPUTTYPE=NIFTI_GZ
     export FSLMULTIFILEQUIT=TRUE
 

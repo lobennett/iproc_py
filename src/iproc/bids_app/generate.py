@@ -625,8 +625,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Path to iProc output/derivatives directory")
     parser.add_argument("--codedir", type=str, default=None,
                         help="Path to iProc code directory (default: $SCRATCH/iProc or same as --iproc-dir)")
-    parser.add_argument("--fsldir", type=str, default="/opt/fsl-5.0.10",
-                        help="FSLDIR path (default: /opt/fsl-5.0.10 for container)")
+    parser.add_argument("--fsldir", type=str, default="/opt/fsl-6.0.7",
+                        help="FSLDIR path (default: /opt/fsl-6.0.7 for container)")
     parser.add_argument("--freesurfer-home", type=str, default="/opt/freesurfer-6.0.0",
                         help="FREESURFER_HOME path (default: /opt/freesurfer-6.0.0 for container)")
     parser.add_argument("--manufacturer", type=str, default=None,
