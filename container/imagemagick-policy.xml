@@ -57,13 +57,19 @@
 -->
 <policymap>
   <!-- <policy domain="resource" name="temporary-path" value="/tmp"/> -->
-  <policy domain="resource" name="memory" value="256MiB"/>
-  <policy domain="resource" name="map" value="512MiB"/>
-  <policy domain="resource" name="width" value="16KP"/>
-  <policy domain="resource" name="height" value="16KP"/>
-  <!-- <policy domain="resource" name="list-length" value="128"/> -->
-  <policy domain="resource" name="area" value="128MP"/>
-  <policy domain="resource" name="disk" value="1GiB"/>
+  <!-- iProc's QC step assembles one slice-montage tile per BOLD run and then
+       `convert -adjoin`s them into a single multi-page PDF. A deeply-sampled
+       subject has dozens of runs (MSC: ~90), so the stock hardening limits
+       (memory 256MiB / disk 1GiB / the built-in ~128 list-length) abort the
+       montage with "list length exceeds limit" and a silent exit 1. These are
+       raised to comfortably cover many-run QC on a 16-32G node. -->
+  <policy domain="resource" name="memory" value="4GiB"/>
+  <policy domain="resource" name="map" value="4GiB"/>
+  <policy domain="resource" name="width" value="64KP"/>
+  <policy domain="resource" name="height" value="64KP"/>
+  <policy domain="resource" name="list-length" value="1000000"/>
+  <policy domain="resource" name="area" value="2GP"/>
+  <policy domain="resource" name="disk" value="16GiB"/>
   <!-- <policy domain="resource" name="file" value="768"/> -->
   <!-- <policy domain="resource" name="thread" value="4"/> -->
   <!-- <policy domain="resource" name="throttle" value="0"/> -->
