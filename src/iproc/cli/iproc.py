@@ -1297,7 +1297,11 @@ def main():
     
     # copy CSVs to log directory so we have permanent record
     csv_archive = log_path.rstrip('log') + 'csv_cfg_archive'
-    os.makedirs(csv_archive)
+    # exist_ok: concurrent iproc invocations sharing a subject+session+minute
+    # timestamp (e.g. a per-run SLURM array fanning out one stage) would
+    # otherwise collide here with FileExistsError; the archived cfg/scanlist
+    # copies are per-invocation-named, so sharing the dir is harmless.
+    os.makedirs(csv_archive, exist_ok=True)
     shutil.copy2(conf.csv.TASKTYPELIST,csv_archive)
     shutil.copy2(conf.csv.SCANLIST,csv_archive)
     shutil.copy2(conf.csv.CLUSTER_REQUESTS,csv_archive)
