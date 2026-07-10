@@ -214,9 +214,14 @@ else: #assume anat
     convert_warpcall = convert_warpcall_anat
     apply_warpcall = apply_warpcall_anat
 
-# get number of cores
-cpus = len(os.sched_getaffinity(0))
-logger.info(f'there are {cpus} processors available to this task')
+# get number of cores. os.sched_getaffinity sees ALL of a node's CPUs inside an
+# Apptainer container even under a SLURM --cpus-per-task limit, so it would spawn
+# far more per-volume workers than the memory budget allows and OOM on long runs
+# (e.g. a ~420-volume rest run). Respect an explicit cap first: IPROC_COMBINE_WORKERS,
+# else SLURM_CPUS_PER_TASK (the actual allocation), else fall back to affinity.
+_cap = os.environ.get('IPROC_COMBINE_WORKERS') or os.environ.get('SLURM_CPUS_PER_TASK')
+cpus = int(_cap) if (_cap and _cap.isdigit() and int(_cap) > 0) else len(os.sched_getaffinity(0))
+logger.info(f'using {cpus} worker processes for this task')
 
 ##merge the linear and nonlinear warps
 ## for ~400 individual files

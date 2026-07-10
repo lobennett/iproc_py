@@ -31,7 +31,7 @@ NEUTRAL_FROM_FORK = [
     "runscript/combine_warps_parallel.sbatch",
     "runscript/combine_warps_parallel_ME.sbatch", "runscript/fs6_project_to_surf.sh",
     "runscript/calculate_nuisance_params.sh", "runscript/fm_unwarp_and_mc_to_midvol.sh",
-    "iProc_p4_sbatch_combined.py", "iProc_p4_sbatch_combined_ME.py",
+    "iProc_p4_sbatch_combined_ME.py",
 ]
 # Files with our own edits (compared explicitly, not to a baseline).
 # runscript/fmap_from_bids.py adds a GE/Philips Hz→rad/s branch (capability
@@ -47,9 +47,13 @@ NEUTRAL_FROM_FORK = [
 # runscript/recon_all.sh accepts N trailing T1 inputs (T1_AVERAGE mode),
 # placing them as orig/001..00N.mgz for recon-all to motion-correct and
 # average; with a single input the emitted recon-all command is unchanged.
+# iProc_p4_sbatch_combined.py caps its multiprocessing worker count to
+# IPROC_COMBINE_WORKERS / SLURM_CPUS_PER_TASK instead of os.sched_getaffinity
+# (which sees all node CPUs inside a container and OOMs long runs when fanned
+# out as a per-run SLURM array); behavior-identical when neither env var is set.
 OURS = {"cli/iproc.py", "steps.py", "runscript/fmap_from_bids.py",
         "bids/__init__.py", "commons/__init__.py", "runscript/func_from_bids.py",
-        "runscript/recon_all.sh"}
+        "runscript/recon_all.sh", "iProc_p4_sbatch_combined.py"}
 
 def _iter_upstream_core():
     for f in (UP / "iproc").rglob("*"):
