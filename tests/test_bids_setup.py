@@ -744,3 +744,32 @@ def test_default_path_renders_fs6_home(tmp_path):
 def test_braga_path_renders_fs7_home(tmp_path):
     rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path), "--braga")
     assert "FS6=/opt/freesurfer-7.1.1/subjects/fsaverage6" in cfg
+
+
+def test_braga_emits_section_and_resolution(tmp_path):
+    rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path), "--braga")
+    assert "[BRAGA]" in cfg
+    assert "BRAGA_MODE=true" in cfg
+    assert "BRAIN_EXTRACT=synthstrip" in cfg
+    assert "FS_VERSION=7" in cfg
+    assert "NATIVE_SURFACE=true" in cfg
+    assert "SLICE_TIMING=false" in cfg
+    assert "NORDIC=false" in cfg
+    assert "MARSS=false" in cfg
+    assert "RESOLUTION=111" in cfg
+
+
+def test_default_emits_braga_section_off(tmp_path):
+    rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path))
+    assert "[BRAGA]" in cfg
+    assert "BRAGA_MODE=false" in cfg
+    assert "BRAIN_EXTRACT=bet" in cfg
+    assert "FS_VERSION=6" in cfg
+    assert "NATIVE_SURFACE=false" in cfg
+
+
+def test_braga_brain_extract_override(tmp_path):
+    rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path),
+                          "--braga", "--brain-extract", "bet")
+    assert "BRAIN_EXTRACT=bet" in cfg
+    assert "RESOLUTION=111" in cfg  # rest still braga

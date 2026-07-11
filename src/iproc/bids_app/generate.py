@@ -429,6 +429,16 @@ MNI_RESAMP={fsldir}/data/standard/MNI152_T1_{res_mm}mm.nii.gz
 MNI_RESAMP_BRAIN={fsldir}/data/standard/MNI152_T1_{res_mm}mm_brain.nii.gz
 MNI_RESAMP_BRAINMASK={fsldir}/data/standard/MNI152_T1_{res_mm}mm_brain_mask.nii.gz
 FS6={freesurfer_home}/subjects/fsaverage6
+
+[BRAGA]
+BRAGA_MODE={braga_mode}
+BRAIN_EXTRACT={brain_extract}
+FS_VERSION={fs_version}
+NATIVE_SURFACE={native_surface}
+SLICE_TIMING={slice_timing}
+NORDIC={nordic}
+MARSS={marss}
+MBFACTOR={mbfactor}
 """
 
 
@@ -441,9 +451,11 @@ def generate_subject_config(
     fsldir: str,
     freesurfer_home: str,
     average_t1: bool = False,
+    braga: dict | None = None,
 ) -> None:
     """Write {sub}.cfg for one subject."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    braga = braga or NONBRAGA_DEFAULTS | {"braga_mode": False, "freesurfer_home": freesurfer_home}
 
     sub_label = sub_data["sub_label"]
     t1_sel = sub_data["t1_selection"]
@@ -467,6 +479,14 @@ def generate_subject_config(
         fsldir=fsldir,
         freesurfer_home=freesurfer_home,
         t1_average=str(average_t1).lower(),
+        braga_mode=str(braga["braga_mode"]).lower(),
+        brain_extract=braga["brain_extract"],
+        fs_version=braga["fs_version"],
+        native_surface=str(braga["native_surface"]).lower(),
+        slice_timing=str(braga["slice_timing"]).lower(),
+        nordic=str(braga["nordic"]).lower(),
+        marss=str(braga["marss"]).lower(),
+        mbfactor=braga["mbfactor"],
     )
 
     with open(output_path, "w") as f:
@@ -503,10 +523,13 @@ def generate_all(
     allow_no_fieldmap: bool = False,
     allow_missing_anat: bool = False,
     average_t1: bool = False,
+    braga: dict | None = None,
 ) -> None:
     """Generate all iProc config files from the manifest."""
     iproc_dir = iproc_dir.resolve()
-    resolution = manifest["study"]["resolution"]
+    braga = braga or (NONBRAGA_DEFAULTS | {"braga_mode": False, "freesurfer_home": freesurfer_home})
+    # --resolution / --braga override the manifest resolution when set.
+    resolution = braga["resolution"] if braga.get("resolution") is not None else manifest["study"]["resolution"]
     echo_time_diff = manifest["study"].get("echo_time_diff", 0.002272)
     bids_root = Path(manifest["study"]["bids_root"])
 
@@ -657,6 +680,7 @@ def generate_all(
             fsldir=fsldir,
             freesurfer_home=freesurfer_home,
             average_t1=average_t1,
+            braga=braga,
         )
 
     log.info("")
@@ -760,6 +784,7 @@ def run_generate(args: argparse.Namespace) -> None:
         allow_no_fieldmap=args.allow_no_fieldmap,
         allow_missing_anat=args.allow_missing_anat,
         average_t1=args.average_t1,
+        braga=braga,
     )
 
 
