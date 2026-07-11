@@ -306,7 +306,10 @@ FSLEOF
     cd /tmp
     curl -fSL "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/7.4.1/freesurfer-linux-ubuntu22_amd64-7.4.1.tar.gz" \
         -o fs741.tar.gz
-    tar xzf fs741.tar.gz -C /opt/freesurfer-7.4.1 --strip-components=1
+    # FS 7.4.1 tarball entries are prefixed "./freesurfer/..." (GNU tar counts
+    # "." as a component), so strip 2 to land bin/ at the root — unlike FS 6.0.0
+    # above whose entries are "freesurfer/..." and need strip 1.
+    tar xzf fs741.tar.gz -C /opt/freesurfer-7.4.1 --strip-components=2
     rm -f fs741.tar.gz
     cp /opt/freesurfer-6.0.0/license.txt /opt/freesurfer-7.4.1/license.txt
     test -f /opt/freesurfer-7.4.1/bin/mri_synthstrip \
