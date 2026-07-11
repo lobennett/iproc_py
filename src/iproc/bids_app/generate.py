@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 FS6_HOME = "/opt/freesurfer-6.0.0"
-FS7_HOME = "/opt/freesurfer-7.1.1"
+FS7_HOME = "/opt/freesurfer-7.4.1"
 
 # Non-braga defaults reproduce upstream harvard-nrg behavior.
 NONBRAGA_DEFAULTS = {
@@ -708,7 +708,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="FSLDIR path (default: /opt/fsl-6.0.7 for container)")
     parser.add_argument("--freesurfer-home", type=str, default=None,
                         help="FREESURFER_HOME path (default: /opt/freesurfer-6.0.0, "
-                             "or /opt/freesurfer-7.1.1 under --braga/--fs-version 7)")
+                             "or /opt/freesurfer-7.4.1 under --braga/--fs-version 7)")
     parser.add_argument("--manufacturer", type=str, default=None,
                         help="Force a scanner Manufacturer into patched fieldmap "
                              "JSON sidecars (default: none — let detect_regime read "

@@ -743,7 +743,7 @@ def test_default_path_renders_fs6_home(tmp_path):
 
 def test_braga_path_renders_fs7_home(tmp_path):
     rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path), "--braga")
-    assert "FS6=/opt/freesurfer-7.1.1/subjects/fsaverage6" in cfg
+    assert "FS6=/opt/freesurfer-7.4.1/subjects/fsaverage6" in cfg
 
 
 def test_braga_emits_section_and_resolution(tmp_path):
