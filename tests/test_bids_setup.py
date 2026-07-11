@@ -756,6 +756,7 @@ def test_braga_emits_section_and_resolution(tmp_path):
     assert "SLICE_TIMING=false" in cfg
     assert "NORDIC=false" in cfg
     assert "MARSS=false" in cfg
+    assert "MBFACTOR=1" in cfg
     assert "RESOLUTION=111" in cfg
 
 

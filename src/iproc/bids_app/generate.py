@@ -70,8 +70,7 @@ def resolve_braga_options(args) -> dict:
     braga = bool(getattr(args, "braga", False))
     base = dict(BRAGA_DEFAULTS if braga else NONBRAGA_DEFAULTS)
 
-    for key in ("resolution", "brain_extract", "fs_version", "native_surface",
-                "slice_timing", "nordic", "marss", "mbfactor"):
+    for key in NONBRAGA_DEFAULTS:
         val = getattr(args, key, None)
         if val is not None:
             base[key] = val
