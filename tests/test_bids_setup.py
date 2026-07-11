@@ -733,3 +733,14 @@ def test_default_selects_single_t1_and_flag_false(tmp_path):
     assert len(anat) == 2, rows
     assert sum(1 for r in anat if r["Analyze"] == "1") == 1, anat
     assert "T1_AVERAGE=false" in cfg
+
+
+def test_default_path_renders_fs6_home(tmp_path):
+    rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path))
+    assert "FS6=/opt/freesurfer-6.0.0/subjects/fsaverage6" in cfg
+    assert "FS6=None" not in cfg
+
+
+def test_braga_path_renders_fs7_home(tmp_path):
+    rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path), "--braga")
+    assert "FS6=/opt/freesurfer-7.1.1/subjects/fsaverage6" in cfg

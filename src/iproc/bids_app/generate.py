@@ -747,12 +747,14 @@ def run_generate(args: argparse.Namespace) -> None:
     with open(args.manifest) as f:
         manifest = yaml.safe_load(f)
 
+    braga = resolve_braga_options(args)
+
     generate_all(
         manifest,
         args.iproc_dir,
         codedir=codedir,
         fsldir=args.fsldir,
-        freesurfer_home=args.freesurfer_home,
+        freesurfer_home=braga["freesurfer_home"],
         manufacturer=args.manufacturer,
         force=args.force,
         allow_no_fieldmap=args.allow_no_fieldmap,
