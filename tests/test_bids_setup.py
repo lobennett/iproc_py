@@ -773,3 +773,12 @@ def test_braga_brain_extract_override(tmp_path):
                           "--braga", "--brain-extract", "bet")
     assert "BRAIN_EXTRACT=bet" in cfg
     assert "RESOLUTION=111" in cfg  # rest still braga
+
+
+def test_default_cfg_keeps_existing_sections(tmp_path):
+    rows, cfg = _generate(tmp_path, _build_two_t1_ds(tmp_path))
+    for section in ("[iproc]", "[template]", "[fmap]", "[csv]", "[fs]",
+                    "[T1]", "[out_atlas]", "[BRAGA]"):
+        assert section in cfg
+    assert "T1_AVERAGE=false" in cfg          # unrelated flag still correct
+    assert "RESOLUTION=" in cfg               # from manifest, unchanged
