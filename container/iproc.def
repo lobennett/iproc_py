@@ -138,6 +138,8 @@ From: ubuntu:22.04
         unzip \
         wget \
         xvfb \
+        libxft2 \
+        rsync \
         zlib1g-dev \
     && locale-gen en_US.UTF-8 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -292,6 +294,38 @@ FSLEOF
     # license.txt already copied via %files
 
     # ------------------------------------------------------------------
+    # 5b. FreeSurfer 7.4.1 (--braga: recon-all + mri_synthstrip)
+    # ------------------------------------------------------------------
+    # Braga uses FS 7.1, but mri_synthstrip (our portable skull-strip
+    # substitute for Braga's private U-Net) was added in FS 7.3.0, so we ship
+    # 7.4.1 to serve BOTH recon-all and SynthStrip from one install. FS 6.0.0
+    # stays the DEFAULT (upstream-identical path); 7.4.1 is selected only via
+    # the [BRAGA] FS_VERSION / FREESURFER_HOME cfg (Phase 1c wiring).
+    echo "=== Installing FreeSurfer 7.4.1 (--braga) ==="
+    mkdir -p /opt/freesurfer-7.4.1
+    cd /tmp
+    curl -fSL "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/7.4.1/freesurfer-linux-ubuntu22_amd64-7.4.1.tar.gz" \
+        -o fs741.tar.gz
+    tar xzf fs741.tar.gz -C /opt/freesurfer-7.4.1 --strip-components=1
+    rm -f fs741.tar.gz
+    cp /opt/freesurfer-6.0.0/license.txt /opt/freesurfer-7.4.1/license.txt
+    test -f /opt/freesurfer-7.4.1/bin/mri_synthstrip \
+        && echo "  mri_synthstrip present (FS 7.4.1)" \
+        || { echo "ERROR: mri_synthstrip missing from FS 7.4.1"; exit 1; }
+
+    # ------------------------------------------------------------------
+    # 5c. R + jsonlite (--braga slice-timing: slicetiming_tool.R)
+    # ------------------------------------------------------------------
+    # Braga's slice-timing step is an R script whose only dependency is
+    # jsonlite (reads BIDS SliceTiming). Installed now so Phase 2 needs no
+    # further container rebuild; the .R script itself is vendored in Phase 2.
+    echo "=== Installing R + jsonlite (--braga slice-timing) ==="
+    apt-get update && apt-get install -y --no-install-recommends r-base-core r-cran-jsonlite \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    Rscript -e 'library(jsonlite); cat("  R + jsonlite OK\n")' \
+        || { echo "ERROR: R/jsonlite verification failed"; exit 1; }
+
+    # ------------------------------------------------------------------
     # 6. AFNI (pre-built binaries)
     # ------------------------------------------------------------------
     # Note: AFNI_ARCHIVE/AFNI_16.3.13.tgz is SOURCE CODE, not binaries.
@@ -333,6 +367,36 @@ FSLEOF
     timeout 15 /opt/afni/afni -version > /opt/afni/INSTALLED_VERSION.txt 2>&1 \
         || echo "unknown (afni -version failed or timed out)" > /opt/afni/INSTALLED_VERSION.txt
     echo "  AFNI installed version: $(cat /opt/afni/INSTALLED_VERSION.txt)"
+
+    # ------------------------------------------------------------------
+    # 6b. AFNI legacy runtime libraries (libpng12, libXp)
+    # ------------------------------------------------------------------
+    # AFNI's linux_openmp_64 binaries link libpng12.so.0, libXft.so.2 and
+    # libXp.so.6. libXft.so.2 is installed via apt (libxft2, section 1).
+    # libpng12 and libXp were dropped from Ubuntu 22.04, so fetch the amd64
+    # .debs from snapshot.debian.org (permanent archive) and extract the .so
+    # files directly with `dpkg-deb -x` — no dpkg dependency resolution, no
+    # multiarch-support needed. Without these, EVERY AFNI tool (3dTproject,
+    # 3dBandpass) fails at load; first surfaced in filter_and_project. The
+    # neurodocker recipe (ReproNim/neurodocker#419) uses these libs; its
+    # original mirror URLs 404 now, so we pin snapshot.debian.org.
+    echo "=== Installing AFNI legacy runtime libs (libpng12, libXp) ==="
+    cd /tmp
+    curl -fsSL --retry 5 -o libxp6.deb \
+        "http://snapshot.debian.org/archive/debian/20141009T042436Z/pool/main/libx/libxp/libxp6_1.0.2-2_amd64.deb"
+    curl -fsSL --retry 5 -o libpng12.deb \
+        "http://snapshot.debian.org/archive/debian-security/20160113T213056Z/pool/updates/main/libp/libpng/libpng12-0_1.2.49-1%2Bdeb7u2_amd64.deb"
+    dpkg-deb -x libxp6.deb /
+    dpkg-deb -x libpng12.deb /
+    ldconfig
+    rm -f /tmp/libxp6.deb /tmp/libpng12.deb
+    # Fail the build now if any AFNI tool still has unresolved libs.
+    if ldd /opt/afni/3dTproject | grep -q "not found"; then
+        echo "ERROR: AFNI 3dTproject still has unresolved libraries:"
+        ldd /opt/afni/3dTproject | grep "not found"
+        exit 1
+    fi
+    echo "  AFNI 3dTproject libraries all resolved"
 
     # ------------------------------------------------------------------
     # 7. ANTs 2.4.4
