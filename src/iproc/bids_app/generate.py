@@ -31,6 +31,62 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Braga mode constants and resolver
+# ---------------------------------------------------------------------------
+
+FS6_HOME = "/opt/freesurfer-6.0.0"
+FS7_HOME = "/opt/freesurfer-7.1.1"
+
+# Non-braga defaults reproduce upstream harvard-nrg behavior.
+NONBRAGA_DEFAULTS = {
+    "resolution": None,          # None -> use manifest["study"]["resolution"]
+    "brain_extract": "bet",
+    "fs_version": 6,
+    "native_surface": False,
+    "slice_timing": False,
+    "nordic": False,
+    "marss": False,
+    "mbfactor": 1,
+}
+# --braga preset = a DEFAULT Braga run. NORDIC/MARSS/slice-timing are opt-in
+# even in Braga, so they stay False here.
+BRAGA_DEFAULTS = {
+    "resolution": 111,
+    "brain_extract": "synthstrip",
+    "fs_version": 7,
+    "native_surface": True,
+    "slice_timing": False,
+    "nordic": False,
+    "marss": False,
+    "mbfactor": 1,
+}
+
+
+def resolve_braga_options(args) -> dict:
+    """Resolve --braga preset + granular flag overrides into final option
+    values. Precedence: an explicitly-passed granular flag beats the preset.
+    Granular flags default to None in argparse so 'not passed' is detectable.
+    """
+    braga = bool(getattr(args, "braga", False))
+    base = dict(BRAGA_DEFAULTS if braga else NONBRAGA_DEFAULTS)
+
+    for key in ("resolution", "brain_extract", "fs_version", "native_surface",
+                "slice_timing", "nordic", "marss", "mbfactor"):
+        val = getattr(args, key, None)
+        if val is not None:
+            base[key] = val
+
+    # freesurfer_home: explicit flag wins; else derive from fs_version.
+    if getattr(args, "freesurfer_home", None) is not None:
+        base["freesurfer_home"] = args.freesurfer_home
+    else:
+        base["freesurfer_home"] = FS7_HOME if base["fs_version"] == 7 else FS6_HOME
+
+    base["braga_mode"] = braga
+    return base
+
+
+# ---------------------------------------------------------------------------
 # Generate tasktype_consolidated.csv
 # ---------------------------------------------------------------------------
 
@@ -627,8 +683,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Path to iProc code directory (default: $SCRATCH/iProc or same as --iproc-dir)")
     parser.add_argument("--fsldir", type=str, default="/opt/fsl-6.0.7",
                         help="FSLDIR path (default: /opt/fsl-6.0.7 for container)")
-    parser.add_argument("--freesurfer-home", type=str, default="/opt/freesurfer-6.0.0",
-                        help="FREESURFER_HOME path (default: /opt/freesurfer-6.0.0 for container)")
+    parser.add_argument("--freesurfer-home", type=str, default=None,
+                        help="FREESURFER_HOME path (default: /opt/freesurfer-6.0.0, "
+                             "or /opt/freesurfer-7.1.1 under --braga/--fs-version 7)")
     parser.add_argument("--manufacturer", type=str, default=None,
                         help="Force a scanner Manufacturer into patched fieldmap "
                              "JSON sidecars (default: none — let detect_regime read "
@@ -650,6 +707,32 @@ def build_parser() -> argparse.ArgumentParser:
                              "T1_AVERAGE=true and marks every T1w Analyze=1). "
                              "Default: single selected T1 (upstream iProc "
                              "behavior).")
+    # --- Braga mode ---
+    parser.add_argument("--braga", action="store_true",
+                        help="Preset: process data the Braga Lab way (1.2mm "
+                             "template, SynthStrip skull-strip, FreeSurfer 7, "
+                             "native surface). Granular flags below override it. "
+                             "Does NOT enable NORDIC/MARSS/slice-timing (opt-in).")
+    parser.add_argument("--resolution", type=int, choices=[111, 222], default=None,
+                        help="Individualized template resolution: 111=1.2mm, "
+                             "222=2mm. Overrides the manifest value.")
+    parser.add_argument("--brain-extract", choices=["bet", "synthstrip"], default=None,
+                        help="Brain extraction method (default bet; braga=synthstrip)")
+    parser.add_argument("--fs-version", type=int, choices=[6, 7], default=None,
+                        help="FreeSurfer version for recon-all (default 6; braga=7)")
+    parser.add_argument("--native-surface", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="Also project to the subject's native ~40k surface "
+                             "(default off; braga on). Use --no-native-surface to "
+                             "disable under --braga.")
+    parser.add_argument("--slice-timing", action=argparse.BooleanOptionalAction,
+                        default=None, help="Slice-timing correction (opt-in)")
+    parser.add_argument("--nordic", action=argparse.BooleanOptionalAction,
+                        default=None, help="NORDIC denoising (opt-in)")
+    parser.add_argument("--marss", action=argparse.BooleanOptionalAction,
+                        default=None, help="MARSS multiband artifact removal (opt-in)")
+    parser.add_argument("--mbfactor", type=int, default=None,
+                        help="Multiband acceleration factor (for MARSS/NORDIC)")
     return parser
 
 
