@@ -389,10 +389,18 @@ FSLEOF
         "http://snapshot.debian.org/archive/debian/20141009T042436Z/pool/main/libx/libxp/libxp6_1.0.2-2_amd64.deb"
     curl -fsSL --retry 5 -o libpng12.deb \
         "http://snapshot.debian.org/archive/debian-security/20160113T213056Z/pool/updates/main/libp/libpng/libpng12-0_1.2.49-1%2Bdeb7u2_amd64.deb"
-    dpkg-deb -x libxp6.deb /
-    dpkg-deb -x libpng12.deb /
+    # Extract to temp dirs and copy ONLY the .so files into the multiarch lib
+    # dir. Do NOT `dpkg-deb -x <deb> /`: the libpng12 deb ships a pre-merged-usr
+    # "./lib/x86_64-linux-gnu/" path, and extracting it through Ubuntu 22.04's
+    # merged-usr /lib symlink clobbers the linker's libc path — /bin/sh then
+    # fails to load and the build dies at the next ldconfig (exit 126).
+    rm -rf /tmp/xp /tmp/png && mkdir -p /tmp/xp /tmp/png
+    dpkg-deb -x libxp6.deb /tmp/xp
+    dpkg-deb -x libpng12.deb /tmp/png
+    cp -a /tmp/xp/usr/lib/x86_64-linux-gnu/libXp.so.* /usr/lib/x86_64-linux-gnu/
+    cp -a /tmp/png/lib/x86_64-linux-gnu/libpng12.so.* /usr/lib/x86_64-linux-gnu/
     ldconfig
-    rm -f /tmp/libxp6.deb /tmp/libpng12.deb
+    rm -rf /tmp/libxp6.deb /tmp/libpng12.deb /tmp/xp /tmp/png
     # Fail the build now if any AFNI tool still has unresolved libs.
     if ldd /opt/afni/3dTproject | grep -q "not found"; then
         echo "ERROR: AFNI 3dTproject still has unresolved libraries:"
